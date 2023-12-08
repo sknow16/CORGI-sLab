@@ -1,5 +1,3 @@
 import numpy as np
-print("まぬけである")
-a = "てすとです"
-
-print("しゅんは小さくなる")
+a = np.exp(3)
+print(a)
