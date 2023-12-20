@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
-# MNIST等の画像が入ってるデータベース
+# 画像が入ってるデータベース
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
@@ -19,23 +19,23 @@ transform = transforms.Compose([
     # データの正規化
     transforms.Normalize(0.5, 0.5),
     # テンソルの1階テンソル化
-    transforms.Lambda(lambda x: x.view(-1)),    
+    transforms.Lambda(lambda x: x.view(-1)),
 ])
 
-train_set = datasets.MNIST(
+train_set = datasets.CIFAR10(
     root = data_root,
     train = True,
     download = True,
     transform = transform)
 
-test_set = datasets.MNIST(
+test_set = datasets.CIFAR10(
     root = data_root,
     train = False,
     download = True,
     transform = transform)
 
 # ミニバッチサイズの指定
-batch_size = 500
+batch_size = 64
 
 # 訓練データは過学習を回避するためにシャッフルする
 # テストデータは対照実験のためシャッフルしない
@@ -60,14 +60,14 @@ n_output = len(set(list(labels.data.numpy())))
 
 # 隠れ層のノード
 n_hidden = 128
-
+# 入力10出力1隠れ層のニューラルネットワークモデル
 # モデルの定義
-# 784入力10出力1隠れ層のニューラルネットワークモデル
 class Net(nn.Module):
     def __init__(self, n_input, n_output, n_hidden):
         super().__init__()
         # 隠れ層の定義（隠れ層のノード数：n_hidden）
         self.l1 = nn.Linear(n_input, n_hidden)
+        self.l12 = nn.Linear(n_hidden, n_hidden)
         # 出力層の定義
         self.l2 = nn.Linear(n_hidden, n_output)
         # ReLU関数の定義
@@ -75,9 +75,11 @@ class Net(nn.Module):
     def forward(self, x):
         x1 = self.l1(x)
         x2 = self.relu(x1)
-        x3 = self.l2(x2)
-        return x3
-    
+        x3 = self.l12(x2)
+        x4 = self.relu(x3)
+        x5 = self.l2(x4)
+        return x5
+
 # 乱数の固定化
 torch.manual_seed(123)
 torch.cuda.manual_seed(123)
@@ -100,7 +102,7 @@ criterion = nn.CrossEntropyLoss()
 optimaizer = optim.SGD(net.parameters(), lr=lr)
 
 # 繰返し回数
-num_epochs = 10
+num_epochs = 30
 
 # 評価結果記録用(修正)
 history = np.zeros((num_epochs,5))
@@ -116,23 +118,23 @@ for epoch in range(num_epochs):
         # GPUへ転送
         inputs = inputs.to(device)
         labels = labels.to(device)
-        
+
         # 勾配の初期化
         optimaizer.zero_grad()
-        
+
         # 予測計算
         outputs = net(inputs)
-        
+
         # 予測ラベルの算出 (追加)
         # 予測結果の値が最も多いラベルを取り出す。これはどれだけNNの精度が良いか見るために使う。
         predicted_train = torch.max(outputs,1)[1].long()
-        
+
         # 損失関数
         loss = criterion(outputs, labels)
-        
+
         #勾配計算
         loss.backward()
-        
+
         # パラメータ修正
         optimaizer.step()
         # # 損失と精度の計算 (追加)
@@ -142,19 +144,19 @@ for epoch in range(num_epochs):
     # 予測フェーズ
     for inputs_test, labels_test in test_loader:
         n_test += len(labels_test)
-        
+
         inputs_test = inputs_test.to(device)
         labels_test = labels_test.to(device)
-        
+
         # 予測計算
         outputs_test = net(inputs_test)
-        
+
         # 損失計算
         loss_test = criterion(outputs_test, labels_test)
-        
+
         # 予測データ導出
         predicted_test = torch.max(outputs_test, 1)[1]
-        
+
         # 損失と精度の計算
         val_loss += loss_test.item()
         val_acc += (predicted_test == labels_test).sum().item()
@@ -168,25 +170,25 @@ for epoch in range(num_epochs):
     print(f"val_loss:{val_loss}")
     print(f"val_acc :{val_acc}")
     history[epoch]=[epoch,train_loss, train_acc, val_loss, val_acc]
-    
+
 # 学習曲線の表示（損失）
 plt.plot(history[:,0], history[:,1], 'b', label='訓練')
 plt.plot(history[:,0], history[:,3], 'k', label='検証')
-plt.xlabel("繰り返し回数", fontname="MS Gothic")
-plt.ylabel("損失",fontname="MS Gothic")
-plt.title("学習曲線（損失）", fontname="MS Gothic")
+plt.xlabel('繰り返し回数')
+plt.ylabel('損失')
+plt.title('学習曲線（損失）')
 plt.legend()
-plt.savefig('損失.png')
+plt.savefig('損失2.png')
 plt.show()
 
 # 学習曲線の表示（精度）
 plt.plot(history[:,0], history[:,2], 'b', label='訓練')
 plt.plot(history[:,0], history[:,4], 'k', label='検証')
-plt.xlabel("繰り返し回数", fontname="MS Gothic")
-plt.ylabel("精度",fontname="MS Gothic")
-plt.title("学習曲線（精度）", fontname="MS Gothic")
+plt.xlabel('繰り返し回数')
+plt.ylabel('精度')
+plt.title('学習曲線（精度）')
 plt.legend()
-plt.savefig('精度.png')
+plt.savefig('精度2.png')
 plt.show()
 
 # 損失と精度の確認
