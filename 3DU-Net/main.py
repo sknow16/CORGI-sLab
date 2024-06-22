@@ -8,22 +8,31 @@ from monai.transforms import (
     Compose,
     Resized,
     ToTensord,
+    MapTransform,
+    ConvertToMultiChannelBasedOnBratsClassesD,
+    Spacingd,
 )
 from tqdm.auto import tqdm
 import argparse
 from sklearn.model_selection import train_test_split
 from train_util import Trainer
 from torch.optim import Adam
+import logging
+from metric.metric import dice
 
 def main(args):
     df = pd.read_csv(args.csv_path)
     # 画像の前処理 (今は、ラベルの情報が0,1,2,3になっていたのがResizeでおかしくなってることに注意)
     transform = Compose([
-        Resized(keys=["image", "label"], spatial_size=(args.image_size, args.image_size, args.volume_size)),
+        ConvertToMultiChannelBasedOnBratsClassesD(keys="label"),
+        Resized(keys=["image"], spatial_size=(args.image_size, args.image_size, args.volume_size), mode="trilinear"),  # 画像のサイズ変更
+        Resized(keys=["label"], spatial_size=(args.image_size, args.image_size, args.volume_size), mode="nearest"),  # ラベルのサイズ変更
         ToTensord(keys=["image", "label"]),
     ])
-    train_df, val_df = train_test_split(df, test_size=0.6, random_state=args.seed)
-    val_df, test_df = train_test_split(val_df, test_size=0.5, random_state=args.seed)
+
+    val_test_df, train_df = train_test_split(df, test_size=0.413, random_state=args.seed)
+    test_df, val_df = train_test_split(val_test_df, test_size=0.341, random_state=args.seed)
+
     args.train_size, args.val_size, args.test_size = len(train_df), len(val_df), len(test_df)
     
     train_set = brain_dataset(train_df, transform=transform)
@@ -32,6 +41,7 @@ def main(args):
     model     = UNet3D(args.in_channels, args.out_channels)
     optimizer = Adam(model.parameters(),lr=args.lr)
     criterion = torch.nn.MSELoss()
+
     trainer = Trainer(
         model=model,
         optimizer=optimizer,
@@ -54,7 +64,7 @@ if __name__ == '__main__':
     parser.add_argument('--volume_size', type=int, default=128)
 
     parser.add_argument('--in_channels', type=int, default=4)   # モデルの入力チャネル
-    parser.add_argument('--out_channels', type=int, default=1)  # モデルの出力チャネル
+    parser.add_argument('--out_channels', type=int, default=3)  # モデルの出力チャネル
 
     parser.add_argument('--epochs', type=int, default=600)
     parser.add_argument('--lr', type=float, default=1e-4)
@@ -64,7 +74,7 @@ if __name__ == '__main__':
 
     # wandb関連
     parser.add_argument('--wandb_flag', type=bool, default=True)
-    parser.add_argument('--project_name', type=str, default='3DU-Net_Brats')         # プロジェクト名
+    parser.add_argument('--project_name', type=str, default='3DU-Net_Brats_jaccard')         # プロジェクト名
     parser.add_argument('--model_name', type=str, default='3DU-Net')
     parser.add_argument('--dataset', type=str, default='Brats')
     parser.add_argument('--model_detail', type=str, default='論文まねした。')   # ちょっとした詳細
