@@ -2,25 +2,37 @@ from dataset import brain_dataset
 from model import UNet3D
 import torch
 import pandas as pd
-import matplotlib.pyplot as plt
-from torch.utils.data import DataLoader
+
 from monai.transforms import (
     Compose,
     Resized,
     ToTensord,
-    MapTransform,
     ConvertToMultiChannelBasedOnBratsClassesD,
-    Spacingd,
 )
 from tqdm.auto import tqdm
 import argparse
 from sklearn.model_selection import train_test_split
 from train_util import Trainer
 from torch.optim import Adam
-import logging
-from metric.metric import dice
+
+from guided_diffusion.script_util import create_gaussian_diffusion
 
 def main(args):
+    model     = UNet3D(args.in_channels, args.out_channels)
+    diffusion = create_gaussian_diffusion(
+        # 拡散処理の設定
+        steps=1000,         # 時間ステップ:T
+        learn_sigma=False,  # 分散を学習するか
+        sigma_small=False,
+        noise_schedule="linear",  # ノイズのスケジュール
+        use_kl=False,
+        predict_xstart=True,
+        rescale_timesteps=False,
+        rescale_learned_sigmas=False,
+        timestep_respacing="ddim50", # 何も指定しなければddpm, ddim100
+        # timestep_respacing="ddim100", # 何も指定しなければddpm, ddim100
+    )
+
     df = pd.read_csv(args.csv_path)
     # 画像の前処理 (今は、ラベルの情報が0,1,2,3になっていたのがResizeでおかしくなってることに注意)
     transform = Compose([
@@ -30,26 +42,20 @@ def main(args):
         ToTensord(keys=["image", "label"]),
     ])
 
-    val_test_df, train_df = train_test_split(df, test_size=0.413, random_state=args.seed)
-    test_df, val_df = train_test_split(val_test_df, test_size=0.341, random_state=args.seed)
-
-    # val_test_df, train_df = train_test_split(df, test_size=0.515, random_state=args.seed)
-    # test_df, val_df = train_test_split(val_test_df, test_size=0.414, random_state=args.seed)
-
-    # val_test_df, train_df = train_test_split(df, test_size=0.618, random_state=args.seed)
-    # test_df, val_df = train_test_split(val_test_df, test_size=0.527, random_state=args.seed)
-
+    val_test_df, train_df = train_test_split(df, test_size=0.515, random_state=args.seed)
+    val_test_df, rest_df = train_test_split(val_test_df, test_size=0.17, random_state=args.seed)
+    val_df, test_df = train_test_split(val_test_df, test_size=0.5, random_state=args.seed)
     args.train_size, args.val_size, args.test_size = len(train_df), len(val_df), len(test_df)
     
     train_set = brain_dataset(train_df, transform=transform)
     val_set   = brain_dataset(val_df, transform=transform)
     test_set  = brain_dataset(test_df, transform=transform)
-    model     = UNet3D(args.in_channels, args.out_channels)
+    
     optimizer = Adam(model.parameters(),lr=args.lr)
     criterion = torch.nn.MSELoss()
-
     trainer = Trainer(
         model=model,
+        diffusion = diffusion,
         optimizer=optimizer,
         criterion=criterion,
         train_set=train_set,
@@ -63,16 +69,16 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--seed', type=int, default=40) # 今まで42
+    parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--csv_path', type=str, default='/root/save/dataset/Task01_BrainTumour/id_list.csv')
 
     parser.add_argument('--image_size', type=int, default=128)
     parser.add_argument('--volume_size', type=int, default=64)
 
-    parser.add_argument('--in_channels', type=int, default=4)   # モデルの入力チャネル
+    parser.add_argument('--in_channels', type=int, default=3)   # モデルの入力チャネル
     parser.add_argument('--out_channels', type=int, default=3)  # モデルの出力チャネル
 
-    parser.add_argument('--epochs', type=int, default=600)
+    parser.add_argument('--epochs', type=int, default=400)
     parser.add_argument('--lr', type=float, default=1e-4)
 
     parser.add_argument('--batch_size', type=int, default=2)
@@ -81,7 +87,7 @@ if __name__ == '__main__':
     # wandb関連
     parser.add_argument('--wandb_flag', type=bool, default=True)
     parser.add_argument('--project_name', type=str, default='3DU-Net_Brats_128zmini')         # プロジェクト名
-    parser.add_argument('--model_name', type=str, default='3DU-Net')
+    parser.add_argument('--model_name', type=str, default='3DU-Net_gaussian')
     parser.add_argument('--dataset', type=str, default='Brats')
     parser.add_argument('--model_detail', type=str, default='論文まねした。')   # ちょっとした詳細
 

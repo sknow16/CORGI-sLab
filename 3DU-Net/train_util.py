@@ -99,23 +99,23 @@ class Trainer:
             if self.wandb_flag:
                 pred_mask = pred_mask.cpu().numpy()
                 image = image.cpu().numpy()
-                wandb_pred_mask0 = [wandb.Image(pred_mask[i,0,:,:,64]) for i in range(len(pred_mask))]
-                wandb_pred_mask1 = [wandb.Image(pred_mask[i,1,:,:,64]) for i in range(len(pred_mask))]
-                wandb_pred_mask2 = [wandb.Image(pred_mask[i,2,:,:,64]) for i in range(len(pred_mask))]
-                wandb_mask0 = [wandb.Image(mask[i,0,:,:,64]) for i in range(len(mask))]
-                wandb_mask1 = [wandb.Image(mask[i,1,:,:,64]) for i in range(len(mask))]
-                wandb_mask2 = [wandb.Image(mask[i,2,:,:,64]) for i in range(len(mask))]
-                wandb_image0 = [wandb.Image(image[i,0,:,:,64]) for i in range(len(image))]
-                wandb_image1 = [wandb.Image(image[i,1,:,:,64]) for i in range(len(image))]
-                wandb_image2 = [wandb.Image(image[i,2,:,:,64]) for i in range(len(image))]
-                wandb_image3 = [wandb.Image(image[i,3,:,:,64]) for i in range(len(image))]
-                wandb_image0 = [wandb.Image(image[i,0,:,:,64]) for i in range(len(image))]
-                wandb_image1 = [wandb.Image(image[i,1,:,:,64]) for i in range(len(image))]
-                wandb_image2 = [wandb.Image(image[i,2,:,:,64]) for i in range(len(image))]
-                wandb_image3 = [wandb.Image(image[i,3,:,:,64]) for i in range(len(image))]
-                wandb_pred_mask_binary0 = [wandb.Image(pred_mask_binary[i,0,:,:,64]) for i in range(len(pred_mask_binary))]
-                wandb_pred_mask_binary1 = [wandb.Image(pred_mask_binary[i,1,:,:,64]) for i in range(len(pred_mask_binary))]
-                wandb_pred_mask_binary2 = [wandb.Image(pred_mask_binary[i,2,:,:,64]) for i in range(len(pred_mask_binary))]
+                wandb_pred_mask0 = [wandb.Image(pred_mask[i,0,:,:,32]) for i in range(len(pred_mask))]
+                wandb_pred_mask1 = [wandb.Image(pred_mask[i,1,:,:,32]) for i in range(len(pred_mask))]
+                wandb_pred_mask2 = [wandb.Image(pred_mask[i,2,:,:,32]) for i in range(len(pred_mask))]
+                wandb_mask0 = [wandb.Image(mask[i,0,:,:,32]) for i in range(len(mask))]
+                wandb_mask1 = [wandb.Image(mask[i,1,:,:,32]) for i in range(len(mask))]
+                wandb_mask2 = [wandb.Image(mask[i,2,:,:,32]) for i in range(len(mask))]
+                wandb_image0 = [wandb.Image(image[i,0,:,:,32]) for i in range(len(image))]
+                wandb_image1 = [wandb.Image(image[i,1,:,:,32]) for i in range(len(image))]
+                wandb_image2 = [wandb.Image(image[i,2,:,:,32]) for i in range(len(image))]
+                wandb_image3 = [wandb.Image(image[i,3,:,:,32]) for i in range(len(image))]
+                wandb_image0 = [wandb.Image(image[i,0,:,:,32]) for i in range(len(image))]
+                wandb_image1 = [wandb.Image(image[i,1,:,:,32]) for i in range(len(image))]
+                wandb_image2 = [wandb.Image(image[i,2,:,:,32]) for i in range(len(image))]
+                wandb_image3 = [wandb.Image(image[i,3,:,:,32]) for i in range(len(image))]
+                wandb_pred_mask_binary0 = [wandb.Image(pred_mask_binary[i,0,:,:,32]) for i in range(len(pred_mask_binary))]
+                wandb_pred_mask_binary1 = [wandb.Image(pred_mask_binary[i,1,:,:,32]) for i in range(len(pred_mask_binary))]
+                wandb_pred_mask_binary2 = [wandb.Image(pred_mask_binary[i,2,:,:,32]) for i in range(len(pred_mask_binary))]
 
                 wandb.log({
                     'train_loss':train_average_loss,
@@ -159,20 +159,20 @@ class Trainer:
         if self.wandb_flag:
             pred_mask = pred_mask.cpu().numpy()
             image = image.cpu().numpy()
-            wandb_pred_mask0 = [wandb.Image(pred_mask[i,0,:,:,64]) for i in range(len(pred_mask))]
-            wandb_pred_mask1 = [wandb.Image(pred_mask[i,1,:,:,64]) for i in range(len(pred_mask))]
-            wandb_pred_mask2 = [wandb.Image(pred_mask[i,2,:,:,64]) for i in range(len(pred_mask))]
+            wandb_pred_mask0 = [wandb.Image(pred_mask[i,0,:,:,32]) for i in range(len(pred_mask))]
+            wandb_pred_mask1 = [wandb.Image(pred_mask[i,1,:,:,32]) for i in range(len(pred_mask))]
+            wandb_pred_mask2 = [wandb.Image(pred_mask[i,2,:,:,32]) for i in range(len(pred_mask))]
 
-            wandb_mask0 = [wandb.Image(mask[i,0,:,:,64]) for i in range(len(mask))]
-            wandb_mask1 = [wandb.Image(mask[i,1,:,:,64]) for i in range(len(mask))]
-            wandb_mask2 = [wandb.Image(mask[i,2,:,:,64]) for i in range(len(mask))]
-            wandb_image0 = [wandb.Image(image[i,0,:,:,64]) for i in range(len(image))]
-            wandb_image1 = [wandb.Image(image[i,1,:,:,64]) for i in range(len(image))]
-            wandb_image2 = [wandb.Image(image[i,2,:,:,64]) for i in range(len(image))]
-            wandb_image3 = [wandb.Image(image[i,3,:,:,64]) for i in range(len(image))]
-            wandb_pred_mask_binary0 = [wandb.Image(pred_mask_binary[i,0,:,:,64]) for i in range(len(pred_mask_binary))]
-            wandb_pred_mask_binary1 = [wandb.Image(pred_mask_binary[i,1,:,:,64]) for i in range(len(pred_mask_binary))]
-            wandb_pred_mask_binary2 = [wandb.Image(pred_mask_binary[i,2,:,:,64]) for i in range(len(pred_mask_binary))]
+            wandb_mask0 = [wandb.Image(mask[i,0,:,:,32]) for i in range(len(mask))]
+            wandb_mask1 = [wandb.Image(mask[i,1,:,:,32]) for i in range(len(mask))]
+            wandb_mask2 = [wandb.Image(mask[i,2,:,:,32]) for i in range(len(mask))]
+            wandb_image0 = [wandb.Image(image[i,0,:,:,32]) for i in range(len(image))]
+            wandb_image1 = [wandb.Image(image[i,1,:,:,32]) for i in range(len(image))]
+            wandb_image2 = [wandb.Image(image[i,2,:,:,32]) for i in range(len(image))]
+            wandb_image3 = [wandb.Image(image[i,3,:,:,32]) for i in range(len(image))]
+            wandb_pred_mask_binary0 = [wandb.Image(pred_mask_binary[i,0,:,:,32]) for i in range(len(pred_mask_binary))]
+            wandb_pred_mask_binary1 = [wandb.Image(pred_mask_binary[i,1,:,:,32]) for i in range(len(pred_mask_binary))]
+            wandb_pred_mask_binary2 = [wandb.Image(pred_mask_binary[i,2,:,:,32]) for i in range(len(pred_mask_binary))]
             wandb.log({
                     'test_loss':test_average_loss,
                     'pred_mask0':wandb_pred_mask0,
