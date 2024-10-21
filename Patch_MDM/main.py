@@ -16,10 +16,6 @@ from guided_diffusion.resample import create_named_schedule_sampler
 from guided_diffusion.script_util import (
     create_model,
     create_gaussian_diffusion,
-    model_and_diffusion_defaults,
-    create_model_and_diffusion,
-    args_to_dict,
-    add_dict_to_argparser,
 )
 from guided_diffusion.train_util import Trainer
 
@@ -44,17 +40,21 @@ def main(args):
     optimizer = Adam(model.parameters(),lr=args.lr)
     args.val_volume = len(Ftestdataset)
     args.train_volume = len(Ftraindataset)
-    trainer = Trainer(
-        model=model,
-        diffusion = diffusion,
-        optimizer=optimizer,
-        train_set=Ftraindataset,
-        val_set=Ftestdataset,
-        # test_set=test_set,
-        args=args,
-        dir_path=None,
-    )
-    trainer.train()
+    # trainer = Trainer(
+    #     model=model,
+    #     diffusion = diffusion,
+    #     optimizer=optimizer,
+    #     train_set=Ftraindataset,
+    #     val_set=Ftestdataset,
+    #     # test_set=test_set,
+    #     args=args,
+    #     dir_path=None,
+    # )
+    # trainer.train()
+    import torch
+    print(torch.version.cuda)  # インストールされているCUDAバージョンを確認
+    print(torch.cuda.is_available())  # CUDAが利用可能かを確認
+    
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -70,7 +70,7 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=400)
     parser.add_argument('--lr', type=float, default=1e-4)
 
-    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=4)
 
     # wandb関連

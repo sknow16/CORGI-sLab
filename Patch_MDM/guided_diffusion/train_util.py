@@ -19,7 +19,8 @@ class Trainer:
         dir_path,
         scheduler=None,
     ):
-        self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
+        self.device = th.device("cuda0" if th.cuda.is_available() else "cpu")
+        print(self.device)
         self.model = model.to(self.device)
         self.diffusion    = diffusion
 
