@@ -29,6 +29,23 @@ def zero_module(module):
         p.detach().zero_()
     return module
 
+# 畳み込み層、バッチ正規層、ReLU関数を各2回
+class ConvBlock(nn.Module):
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.convs = nn.Sequential(   # nn.Sequential：モジュールを順序付けして1つのモジュールとして定義する
+            nn.Conv2d(in_ch, out_ch, 3, padding=1),  
+            nn.GroupNorm(32, out_ch),
+            nn.ReLU(),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1),
+            nn.GroupNorm(32, out_ch),
+            nn.ReLU()
+        )
+
+    def forward(self, x):  # forward：純伝播処理
+        y = self.convs(x)
+        return y
+    
 class ResBlock(nn.Module):
     def __init__(self, in_ch, out_ch, time_embed_dim,dropout=0, useconv=False):
         super().__init__()
@@ -74,12 +91,42 @@ class ResBlock(nn.Module):
         else:
             h = self.out_layer(h)
         return h+self.skip_connection(x)
+
+class ImageEncoder(nn.module):
+    # モデルの構造を定義
+    def __init__(self, in_ch, hidden_ch=32):
+        """
+        in_ch: 入力チャンネル数
+        hidden_ch: 隠れ層のチャンネル数
+        """
+        super().__init__()
+        self.in_conv = nn.Conv2d(in_ch, hidden_ch, kernel_size=3, stride=1, padding=1)
+        self.down = nn.MaxPool2d(2) # 1/2に縮小
+        # nn.Sequentialで、複数の層(GroupNorm, ReLU, Conv)を順に実行するように定義
+        self.conv1 = ConvBlock(hidden_ch, hidden_ch*2)
+        # nn.Sequentialで、複数の層(GroupNorm, ReLU, Conv)を順に実行するように定義
+        self.conv2 = ConvBlock(hidden_ch*2, hidden_ch*4)
+        # # nn.Sequentialで、複数の層(GroupNorm, ReLU, Conv)を順に実行するように定義
+        self.conv3 = ConvBlock(hidden_ch*4, hidden_ch*8)
+    
+    # 順伝播を定義
+    def forward(self, x):
+        x = self.in_conv(x) # (32, 64, 64) 
+        x = self.down(x)  # (32, 64, 64) -> (32, 32, 32)
+        x1 = self.conv1(x)  # (64, 32, 32)
+        x = self.down(x1)  # (64, 32, 32) -> (64, 16, 16)
+        x2 = self.conv2(x)  # (128, 16, 16)
+        x = self.down(x2)  # (128, 64, 64) -> (128, 32, 32)
+        x3 = self.conv3(x,None)  # (256, 32, 32)
+        x = self.down(x3)  # (256, 32, 32) -> (256, 16, 16)
+        x4 = self.conv4(x,None)  # (256, 16, 16)
+        return x2, x3, x4
     
 # U-Net構造 ====================================================================
 # time_embed_dim=100：各タイムステップに対応する特徴量の値(実際の時間とは関係ない)
 # サイズ縮小：Maxプーリング　サイズ拡大：バイリニア補間
 # ==============================================================================
-class UNet(nn.Module):
+class SegUNet(nn.Module):
     def __init__(self, in_ch=3, out_ch=3, cond_in_ch=3 ,hidden_ch=32, time_embed_dim=100):
         super().__init__()
         self.time_embed_dim = time_embed_dim

@@ -90,21 +90,25 @@ class PositionEncoder(nn.Module):
         # nn.Sequentialで、複数の層(GroupNorm, ReLU, Conv)を順に実行するように定義
         self.conv2 = ResBlock(hidden_ch*2, hidden_ch*4, 100)
         # # nn.Sequentialで、複数の層(GroupNorm, ReLU, Conv)を順に実行するように定義
-        self.conv3 = ResBlock(hidden_ch*4, hidden_ch*8, 100)
-        self.conv4 = ResBlock(hidden_ch*8, hidden_ch*8, 100)
+        self.conv3 = ResBlock(hidden_ch*4, hidden_ch*4, 100)
+        self.conv4 = ResBlock(hidden_ch*4, hidden_ch*8, 100)
+        self.conv5 = ResBlock(hidden_ch*8, hidden_ch*8, 100)
     
     # 順伝播を定義
     def forward(self, x):
         x = self.in_conv(x) # (32, 256, 256) 
         x = self.down(x)  # (32, 256, 256) -> (32, 128, 128)
         x1 = self.conv1(x,None)  # (64, 128, 128)
+
         x = self.down(x1)  # (64, 128, 128) -> (64, 64, 64)
         x2 = self.conv2(x,None)  # (128, 64, 64)
         x = self.down(x2)  # (128, 64, 64) -> (128, 32, 32)
         x3 = self.conv3(x,None)  # (256, 32, 32)
-        x = self.down(x3)  # (256, 32, 32) -> (256, 16, 16)
+        x = self.down(x3)  # (128, 32, 32) -> (128, 16, 16)
         x4 = self.conv4(x,None)  # (256, 16, 16)
-        return x2, x3, x4
+        x = self.down(x4)  # (256, 16, 16) -> (256, 8, 8)
+        x5 = self.conv5(x, None) # (256, 8, 8)
+        return x2, x3, x4, x5
 
 # U-Net構造 ====================================================================
 # time_embed_dim=100：各タイムステップに対応する特徴量の値(実際の時間とは関係ない)
@@ -118,18 +122,22 @@ class UNet(nn.Module):
         self.position_encoder = PositionEncoder(cond_in_ch, hidden_ch)
         self.conv_in = nn.Conv2d(in_ch, hidden_ch, 3,1,1)  # パッチ画像(1, 64, 64) -> (32, 64, 64)に変更
         self.down1 = ResBlock(hidden_ch+hidden_ch*4, hidden_ch*2, time_embed_dim)
-        self.down2 = ResBlock(hidden_ch*2+hidden_ch*8, hidden_ch*4, time_embed_dim)
-        self.bot1  = ResBlock(hidden_ch*4+hidden_ch*8, hidden_ch*8, time_embed_dim)
-        self.up2 = ResBlock(hidden_ch*4 + hidden_ch*8, hidden_ch*4, time_embed_dim)
-        self.up1 = ResBlock(hidden_ch*4 + hidden_ch*2, hidden_ch*2, time_embed_dim)
-        self.out = nn.Conv2d(hidden_ch*2, out_ch, 1)
+        self.down2 = ResBlock(hidden_ch*2+hidden_ch*4, hidden_ch*4, time_embed_dim)
+        self.down3 = ResBlock(hidden_ch*4+hidden_ch*8, hidden_ch*8, time_embed_dim)
+
+        self.bot1  = ResBlock(hidden_ch*8+hidden_ch*8, hidden_ch*8, time_embed_dim)
+
+        self.up3 = ResBlock(hidden_ch*8 + hidden_ch*8, hidden_ch*4, time_embed_dim)
+        self.up2 = ResBlock(hidden_ch*4 + hidden_ch*4, hidden_ch*2, time_embed_dim)
+        self.up1 = ResBlock(hidden_ch*2 + hidden_ch*2, hidden_ch, time_embed_dim)
+        self.out = nn.Conv2d(hidden_ch, out_ch, 1)
         
         self.maxpool  = nn.MaxPool2d(2)
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear')
 
     def forward(self, x, timesteps, cond):
         v = pos_encoding(timesteps, self.time_embed_dim, x.device) # 拡散ステップのためのposition encoder
-        cond1, cond2, cond3 = self.position_encoder(cond)
+        cond1, cond2, cond3, cond4 = self.position_encoder(cond)
         x = self.conv_in(x)
         x = torch.concat([x, cond1], dim=1)
         x1 = self.down1(x, v)
@@ -138,8 +146,14 @@ class UNet(nn.Module):
         x2 = self.down2(x, v)
         x = self.maxpool(x2)
         x = torch.concat([x, cond3], dim=1)
-
+        x3 = self.down3(x, v)
+        x = self.maxpool(x3)
+        x = torch.concat([x,cond4], dim=1)
         x = self.bot1(x, v)
+
+        x = self.upsample(x)
+        x = torch.cat([x, x3], dim=1)
+        x = self.up3(x, v)
 
         x = self.upsample(x)
         x = torch.cat([x, x2], dim=1)
@@ -150,9 +164,9 @@ class UNet(nn.Module):
         x = self.out(x)
         return x
     
-# x = torch.randn(1,3,64,64)
-# t = torch.tensor([1])
-# cond = torch.randn(1,3,256,256)
-# model = UNet()
-# output = model(x,t,cond)
-# print(output.shape)
+x = torch.randn(1,1,64,64)
+t = torch.tensor([1])
+cond = torch.randn(1,1,256,256)
+model = UNet()
+output = model(x,t,cond)
+print(output.shape)
