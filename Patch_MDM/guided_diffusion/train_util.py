@@ -4,6 +4,7 @@ from tqdm.auto import tqdm
 # from metric.metric import dice, jaccard
 from guided_diffusion.save_log import save_model,save_imgs
 import wandb
+import os
 
 class Trainer:
     def __init__(
@@ -19,13 +20,13 @@ class Trainer:
         dir_path,
         scheduler=None,
     ):
-        self.device = th.device("cuda0" if th.cuda.is_available() else "cpu")
+        self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
         print(self.device)
         self.model = model.to(self.device)
         self.diffusion    = diffusion
 
         self.train_loader = DataLoader(train_set, shuffle=True, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True,drop_last=True)
-        self.val_loader   = DataLoader(val_set, shuffle=False, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True,drop_last=False)
+        self.val_loader   = DataLoader(val_set, shuffle=True, batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True,drop_last=False)
         # self.test_loader  = DataLoader(test_set, shuffle=False,batch_size=args.batch_size, num_workers=args.num_workers, pin_memory=True,drop_last=False)
 
         self.img_size   = args.image_size
@@ -42,6 +43,8 @@ class Trainer:
         self.dir_path     = dir_path
 
         self.val_volume  = args.val_volume
+        self.best_loss   = float("inf")
+        self.best_path     = os.path.join(dir_path,"weights",f"weight_epoch_best_SSIM.pth")
         # self.test_volume = args.test_volume
 
         if self.wandb_flag:
@@ -58,6 +61,7 @@ class Trainer:
                 "learning_rate": args.lr,
                 "train_volume": args.train_volume,
                 "val_volume": args.val_volume,
+                "dir_path":   self.dir_path
                 # "test_volume": args.test_volume
                 }
             )
@@ -79,23 +83,27 @@ class Trainer:
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
-                train_losses.append(loss.item())
-
-             
+                train_losses.append(loss.item())             
                         
             # サンプリング (val)
             # 今は固定で２５エポックごとにサンプリングして評価
             self.model.eval()
-            if epoch % 25 == 0:
+            if epoch%10==0:
                 for image in self.val_loader:
                     x_start = image.to(self.device)
                     pred_x_start_list = []
-                    with th.no_grad:
+                    with th.no_grad():
                         t = th.randint(0, self.diffusion.num_timesteps, (x_start.shape[0],), device=self.device)
                         loss_dict = self.diffusion.training_losses(self.model, x_start, t)
                         loss = loss_dict["loss"]
                         val_losses.append(loss.item())
-                    x_start = x_start.cpu().numpy()
+                    # x_start = x_start.cpu().numpy()
+                
+                mean_val_loss = sum(val_losses)/len(val_losses)
+                if self.best_loss > mean_val_loss:
+                    self.best_loss = mean_val_loss
+                    print("model update...")
+                    save_model(self.model, 'best_SSIM', self.dir_path)
 
             # 25エポック毎で精度を計算し、それ以外は１バッチ分だけサンプリング
             else:
@@ -103,7 +111,9 @@ class Trainer:
                     x_start = image.to(self.device)
                     self.model.eval()
                     with th.no_grad():
-                        t = th.tensor([250])
+                        batch_size = x_start.shape[0]
+                        # tをバッチサイズに合わせた形に拡張
+                        t = th.tensor([500] * batch_size).to(self.device)
                         x_t = self.diffusion.q_sample(x_start, t)
                         pred_x_start = self.model(x_t, t)
                     break
@@ -115,13 +125,15 @@ class Trainer:
 
             if self.wandb_flag:
                 wandb_num_images = self.wandb_num_images if self.wandb_num_images<=x_start.shape[0] else x_start.shape[0]
-                if epoch % 25 == 0: # 今は固定で２５エポックごとにサンプリングして評価
+                if epoch%10==0: # 今は固定で２５エポックごとにサンプリングして評価
                     wandb.log({
                         "train_loss":trian_avg_loss,
                         "val_loss": sum(val_losses)/len(val_losses)
                         })
 
                 else:
+                    print(x_start.shape)
+                    print(pred_x_start.shape)
                     wandb_image  = [wandb.Image(x_start[i]) for i in range(wandb_num_images)]
                     wandb_pred_x = [wandb.Image(pred_x_start[i]) for i in range(wandb_num_images)]
                     wandb_x_t    = [wandb.Image(x_t[i]) for i in range(wandb_num_images)]
