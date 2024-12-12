@@ -75,6 +75,11 @@ class ResBlock(nn.Module):
             h = self.out_layer(h)
         return h+self.skip_connection(x)
     
+# PositionEncorder構造 =========================================================
+# 位置情報を条件付けするためのエンコーダー
+# 256×256の画像を畳み込んで「128×128」「64×64」「32×32」「16×16」になった特徴マップを
+# 学習用U-Netに条件付けする
+# ==============================================================================
 class PositionEncoder(nn.Module):
     # モデルの構造を定義
     def __init__(self, in_ch, hidden_ch=32):
@@ -99,31 +104,28 @@ class PositionEncoder(nn.Module):
         x = self.in_conv(x) # (32, 256, 256) 
         x = self.down(x)  # (32, 256, 256) -> (32, 128, 128)
         x1 = self.conv1(x,None)  # (64, 128, 128)
-
         x = self.down(x1)  # (64, 128, 128) -> (64, 64, 64)
         x2 = self.conv2(x,None)  # (128, 64, 64)
         x = self.down(x2)  # (128, 64, 64) -> (128, 32, 32)
         x3 = self.conv3(x,None)  # (256, 32, 32)
         x = self.down(x3)  # (128, 32, 32) -> (128, 16, 16)
         x4 = self.conv4(x,None)  # (256, 16, 16)
-        x = self.down(x4)  # (256, 16, 16) -> (256, 8, 8)
-        x5 = self.conv5(x, None) # (256, 8, 8)
-        return x2, x3, x4, x5
+        return x1, x2, x3, x4
 
 # U-Net構造 ====================================================================
-# time_embed_dim=100：各タイムステップに対応する特徴量の値(実際の時間とは関係ない)
-# サイズ縮小：Maxプーリング　サイズ拡大：バイリニア補間
+# 4箇所(3層+bottleneck)にそれぞれPositionEncoderから特徴マップを
+# 位置情報としてconcat(cond1,2,3,4)
 # ==============================================================================
 class UNet(nn.Module):
-    def __init__(self, in_ch=1, out_ch=1, cond_in_ch=1 ,hidden_ch=32, time_embed_dim=100):
+    def __init__(self, in_ch=1, out_ch=1, cond_in_ch=2 ,hidden_ch=32, time_embed_dim=100):
         super().__init__()
         self.time_embed_dim = time_embed_dim
 
         self.position_encoder = PositionEncoder(cond_in_ch, hidden_ch)
         self.conv_in = nn.Conv2d(in_ch, hidden_ch, 3,1,1)  # パッチ画像(1, 64, 64) -> (32, 64, 64)に変更
-        self.down1 = ResBlock(hidden_ch+hidden_ch*4, hidden_ch*2, time_embed_dim)
+        self.down1 = ResBlock(hidden_ch+hidden_ch*2, hidden_ch*2, time_embed_dim)
         self.down2 = ResBlock(hidden_ch*2+hidden_ch*4, hidden_ch*4, time_embed_dim)
-        self.down3 = ResBlock(hidden_ch*4+hidden_ch*8, hidden_ch*8, time_embed_dim)
+        self.down3 = ResBlock(hidden_ch*4+hidden_ch*4, hidden_ch*8, time_embed_dim)
 
         self.bot1  = ResBlock(hidden_ch*8+hidden_ch*8, hidden_ch*8, time_embed_dim)
 
@@ -164,9 +166,9 @@ class UNet(nn.Module):
         x = self.out(x)
         return x
     
-x = torch.randn(1,1,64,64)
-t = torch.tensor([1])
-cond = torch.randn(1,1,256,256)
-model = UNet()
-output = model(x,t,cond)
-print(output.shape)
+# x = torch.randn(1,1,128,128)
+# t = torch.tensor([1])
+# cond = torch.randn(1,2,256,256)
+# model = UNet()
+# output = model(x,t,cond)
+# print(output.shape)

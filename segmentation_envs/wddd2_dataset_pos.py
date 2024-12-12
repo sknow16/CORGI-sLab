@@ -24,7 +24,7 @@ class WDDD2Dataset(Dataset):
         path= self.data_path[index]  # index ⇒ data_pathの任意の列
         img = Image.open(path)      
         if self.transform:
-            img = self.transform(img)
+            img = self.transform["image"](img)
             
         return img
 
