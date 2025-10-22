@@ -30,8 +30,10 @@ def main(args):
         ToTensord(keys=["image", "label"]),
     ])
 
-    val_test_df, train_df = train_test_split(df, test_size=0.413, random_state=args.seed)
-    test_df, val_df = train_test_split(val_test_df, test_size=0.341, random_state=args.seed)
+    train_df, val_test_df = train_test_split(df, test_size=0.2, random_state=args.seed)
+    test_df, val_df = train_test_split(val_test_df, test_size=0.5, random_state=args.seed)
+    # val_test_df, train_df = train_test_split(df, test_size=0.413, random_state=args.seed)
+    # test_df, val_df = train_test_split(val_test_df, test_size=0.341, random_state=args.seed)
 
     # val_test_df, train_df = train_test_split(df, test_size=0.515, random_state=args.seed)
     # test_df, val_df = train_test_split(val_test_df, test_size=0.414, random_state=args.seed)
@@ -66,13 +68,13 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=40) # 今まで42
     parser.add_argument('--csv_path', type=str, default='/root/save/dataset/Task01_BrainTumour/id_list.csv')
 
-    parser.add_argument('--image_size', type=int, default=128)
+    parser.add_argument('--image_size', type=int, default=256)
     parser.add_argument('--volume_size', type=int, default=64)
 
     parser.add_argument('--in_channels', type=int, default=4)   # モデルの入力チャネル
     parser.add_argument('--out_channels', type=int, default=3)  # モデルの出力チャネル
 
-    parser.add_argument('--epochs', type=int, default=600)
+    parser.add_argument('--epochs', type=int, default=500)
     parser.add_argument('--lr', type=float, default=1e-4)
 
     parser.add_argument('--batch_size', type=int, default=2)
@@ -80,8 +82,8 @@ if __name__ == '__main__':
 
     # wandb関連
     parser.add_argument('--wandb_flag', type=bool, default=True)
-    parser.add_argument('--project_name', type=str, default='3DU-Net_Brats_128zmini')         # プロジェクト名
-    parser.add_argument('--model_name', type=str, default='3DU-Net')
+    parser.add_argument('--project_name', type=str, default='3DU-Net_Brats_zmini_2025')         # プロジェクト名
+    parser.add_argument('--model_name', type=str, default='3DU-Net_256_256_64')
     parser.add_argument('--dataset', type=str, default='Brats')
     parser.add_argument('--model_detail', type=str, default='論文まねした。')   # ちょっとした詳細
 
@@ -89,7 +91,7 @@ if __name__ == '__main__':
     parser.add_argument('--val_size', type=int, default=0)    # 検証
     parser.add_argument('--test_size', type=int, default=0)   # テスト
 
-    parser.add_argument('--img_size', type=str, default='128×128×64')       # 画像サイズ (wandbに送るよう)
+    parser.add_argument('--img_size', type=str, default='256×256×64')       # 画像サイズ (wandbに送るよう)
     parser.add_argument('--optimizer', type=str, default='Adam')         # 最適化関数 (wandbに送るよう)
     parser.add_argument('--loss_function', type=str, default='MSELoss')  # 損失関数 (wandbに送るよう)
 

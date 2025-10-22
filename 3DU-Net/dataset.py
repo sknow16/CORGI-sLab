@@ -26,6 +26,8 @@ class brain_dataset(Dataset):
         # img = img[0]
         # img = np.expand_dims(img,axis=0)
         mask = np.expand_dims(mask, axis=0)    # (H, E, D) -> (C, H, W, D)
+        # maskのラベルを3から4に変換
+        np.place(mask, mask == 3, 4)
 
         sample = {'image': img, 'label': mask}
 
