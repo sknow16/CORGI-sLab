@@ -1,9 +1,11 @@
+import os
 from torch.utils.data import DataLoader
 import torch
 from tqdm.auto import tqdm
 from metric.metric import jaccard
 import wandb
 from skimage.filters import threshold_otsu
+from save_log import save_model, load_model
 
 class Trainer:
     def __init__(
@@ -24,6 +26,8 @@ class Trainer:
         
         self.optimizer = optimizer
         self.criterion = criterion
+        
+        self.dir_path = dir_path
 
         self.train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers,pin_memory=True,drop_last=True)
         self.val_loader = DataLoader(val_set, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers,pin_memory=True,drop_last=False)
@@ -54,12 +58,14 @@ class Trainer:
 
                 "train_volume": args.train_size,
                 "val_volume": args.val_size,
-                "test_volume": args.test_size
+                "test_volume": args.test_size,
+                
+                "dir_path": dir_path,
                 }
             )
     
     def train(self):
-        
+        best_miou = 0.0
         for epoch in range(self.epochs):
             print(f"===epoch({epoch+1}/{self.epochs})===")
             train_loss_list = []
@@ -127,6 +133,11 @@ class Trainer:
                 miou              = (jaccard_0_average+jaccard_1_average+jaccard_2_average)/3
                 val_average_loss   = sum(val_loss_list)/len(val_loss_list)
 
+                if miou > best_miou:
+                    print(f"mIoU improved {best_miou:.4f} --> {miou:.4f}. Saving model...")
+                    best_miou = miou
+                    save_model(self.model, "best", self.dir_path)
+                    
                 if self.wandb_flag:
                     pred_mask = pred_mask.cpu().numpy()
                     image = image.cpu().numpy()
@@ -167,6 +178,9 @@ class Trainer:
                         'image2':wandb_image2,
                         'image3':wandb_image3,
                     })
+        
+        save_model(self.model, "last", self.dir_path)
+        self.model = load_model(self.model, os.path.join(self.dir_path,"weights","weight_epoch_best.pth"))
         
         self.model.eval()
         test_loss_list = []
@@ -228,9 +242,9 @@ class Trainer:
             wandb_image1 = [wandb.Image(image[i,1,:,:,32]) for i in range(len(image))]
             wandb_image2 = [wandb.Image(image[i,2,:,:,32]) for i in range(len(image))]
             wandb_image3 = [wandb.Image(image[i,3,:,:,32]) for i in range(len(image))]
-            wandb_pred_mask_binary0 = [wandb.Image(pred_mask_0_binary[i,:,:,32]) for i in range(len(pred_mask_binary))]
-            wandb_pred_mask_binary1 = [wandb.Image(pred_mask_1_binary[i,:,:,32]) for i in range(len(pred_mask_binary))]
-            wandb_pred_mask_binary2 = [wandb.Image(pred_mask_2_binary[i,:,:,32]) for i in range(len(pred_mask_binary))]
+            wandb_pred_mask_binary0 = [wandb.Image(pred_mask_0_binary[i,:,:,32]) for i in range(len(pred_mask_0_binary))]
+            wandb_pred_mask_binary1 = [wandb.Image(pred_mask_1_binary[i,:,:,32]) for i in range(len(pred_mask_1_binary))]
+            wandb_pred_mask_binary2 = [wandb.Image(pred_mask_2_binary[i,:,:,32]) for i in range(len(pred_mask_2_binary))]
             wandb.log({
                     'test_loss':test_average_loss,
                     'pred_mask0':wandb_pred_mask0,

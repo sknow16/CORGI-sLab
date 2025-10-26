@@ -1,4 +1,4 @@
-from dataset import brain_dataset
+from Brats2021 import preDataset
 from model import UNet3D
 import torch
 import pandas as pd
@@ -19,9 +19,15 @@ from train_util import Trainer
 from torch.optim import Adam
 import logging
 from metric.metric import dice
+from save_log import load_model, create_folder
+import os
+from datetime import date
 
 def main(args):
-    df = pd.read_csv(args.csv_path)
+    date_str = date.today().strftime("%Y%m%d")
+    dir_path = os.path.join(args.path,"log",date_str+":"+args.model_name+"_epochs_"+str(args.epochs)+":"+args.dataset)
+    create_folder(dir_path)
+    
     # 画像の前処理 (今は、ラベルの情報が0,1,2,3になっていたのがResizeでおかしくなってることに注意)
     transform = Compose([
         ConvertToMultiChannelBasedOnBratsClassesD(keys="label"),
@@ -30,22 +36,15 @@ def main(args):
         ToTensord(keys=["image", "label"]),
     ])
 
-    train_df, val_test_df = train_test_split(df, test_size=0.2, random_state=args.seed)
-    test_df, val_df = train_test_split(val_test_df, test_size=0.5, random_state=args.seed)
-    # val_test_df, train_df = train_test_split(df, test_size=0.413, random_state=args.seed)
-    # test_df, val_df = train_test_split(val_test_df, test_size=0.341, random_state=args.seed)
+    data_list = [os.path.join(args.dataset_path, d) for d in os.listdir(args.dataset_path) if os.path.isdir(os.path.join(args.dataset_path, d))]
+    train_list , test_list = train_test_split(data_list, test_size=0.2, random_state=args.seed)
+    test_list , val_list  = train_test_split(test_list,  test_size=0.5, random_state=args.seed)
 
-    # val_test_df, train_df = train_test_split(df, test_size=0.515, random_state=args.seed)
-    # test_df, val_df = train_test_split(val_test_df, test_size=0.414, random_state=args.seed)
-
-    # val_test_df, train_df = train_test_split(df, test_size=0.618, random_state=args.seed)
-    # test_df, val_df = train_test_split(val_test_df, test_size=0.527, random_state=args.seed)
-
-    args.train_size, args.val_size, args.test_size = len(train_df), len(val_df), len(test_df)
+    args.train_size, args.val_size, args.test_size = len(train_list), len(val_list), len(test_list)
+    train_set = preDataset(train_list, transform=transform)
+    val_set   = preDataset(val_list,   transform=transform)
+    test_set  = preDataset(test_list,  transform=transform)
     
-    train_set = brain_dataset(train_df, transform=transform)
-    val_set   = brain_dataset(val_df, transform=transform)
-    test_set  = brain_dataset(test_df, transform=transform)
     model     = UNet3D(args.in_channels, args.out_channels)
     optimizer = Adam(model.parameters(),lr=args.lr)
     criterion = torch.nn.MSELoss()
@@ -58,7 +57,7 @@ def main(args):
         val_set=val_set,
         test_set=test_set,
         args=args,
-        dir_path=None,
+        dir_path=dir_path,
     )
     
     trainer.train()
@@ -66,9 +65,10 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=40) # 今まで42
-    parser.add_argument('--csv_path', type=str, default='/root/save/dataset/Task01_BrainTumour/id_list.csv')
+    parser.add_argument('--path', type=str, default="/root/save")
+    parser.add_argument('--dataset_path', type=str, default="/root/save/dataset/Brats2021/BraTS2021_Training_Data")
 
-    parser.add_argument('--image_size', type=int, default=256)
+    parser.add_argument('--image_size', type=int, default=240)
     parser.add_argument('--volume_size', type=int, default=64)
 
     parser.add_argument('--in_channels', type=int, default=4)   # モデルの入力チャネル
@@ -82,16 +82,16 @@ if __name__ == '__main__':
 
     # wandb関連
     parser.add_argument('--wandb_flag', type=bool, default=True)
-    parser.add_argument('--project_name', type=str, default='3DU-Net_Brats_zmini_2025')         # プロジェクト名
-    parser.add_argument('--model_name', type=str, default='3DU-Net_256_256_64')
-    parser.add_argument('--dataset', type=str, default='Brats')
+    parser.add_argument('--project_name', type=str, default='Brats2021_24024064')         # プロジェクト名
+    parser.add_argument('--model_name', type=str, default='3DU-Net')  # モデル名
+    parser.add_argument('--dataset', type=str, default='Brats2021')
     parser.add_argument('--model_detail', type=str, default='論文まねした。')   # ちょっとした詳細
 
     parser.add_argument('--train_size', type=int, default=0)  # 訓練
     parser.add_argument('--val_size', type=int, default=0)    # 検証
     parser.add_argument('--test_size', type=int, default=0)   # テスト
 
-    parser.add_argument('--img_size', type=str, default='256×256×64')       # 画像サイズ (wandbに送るよう)
+    parser.add_argument('--img_size', type=str, default='240×240×64')       # 画像サイズ (wandbに送るよう)
     parser.add_argument('--optimizer', type=str, default='Adam')         # 最適化関数 (wandbに送るよう)
     parser.add_argument('--loss_function', type=str, default='MSELoss')  # 損失関数 (wandbに送るよう)
 
