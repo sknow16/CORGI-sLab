@@ -84,6 +84,7 @@ class Trainer:
                 loss.backward()
                 self.optimizer.step()
                 train_loss_list.append(loss.item())
+                
             train_average_loss = sum(train_loss_list)/len(train_loss_list)
             if (epoch+1)%10!=0:
                 wandb.log({

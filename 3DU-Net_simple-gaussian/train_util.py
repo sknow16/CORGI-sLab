@@ -4,7 +4,8 @@ from tqdm.auto import tqdm
 import wandb
 from skimage.filters import threshold_otsu
 from metric.metric import jaccard
-
+import os
+from save_log import save_model, load_model
 class Trainer:
     def __init__(
             self,
@@ -24,6 +25,8 @@ class Trainer:
         self.model  = model.to(self.device)
         self.diffusion = diffusion
         
+        self.dir_path = dir_path
+        
         self.optimizer = optimizer
         self.criterion = criterion # 今回は使ってない(普通の3DU-Netのときはつかう)
 
@@ -39,6 +42,7 @@ class Trainer:
             wandb.init(
                 project=args.project_name,
                 tags=[args.dim_size],
+                name=args.model_name,
                 config={
                 "model":         args.model_name,
                 "dataset":       args.dataset,
@@ -60,10 +64,14 @@ class Trainer:
             )
     
     def train(self):
-        
+        best_miou = 0.0
         for epoch in range(self.epochs):
+            print(f"===epoch({epoch+1}/{self.epochs})===")
             train_loss_list = []
-            val_loss_list = [] # 拡散モデルの時はサンプリング過程がたくさん
+            val_loss_list = []
+            jaccard_0_list = []
+            jaccard_1_list = []
+            jaccard_2_list = []
             self.model.train()
 
             for batch in tqdm(self.train_loader): # バーがでてくる
@@ -78,22 +86,30 @@ class Trainer:
                 self.optimizer.step()
                 train_loss_list.append(loss.item())
 
-            self.model.eval()
-            jaccard_list = []
-            if (epoch+1) % 10!=0:
-                train_average_loss = sum(train_loss_list)/len(train_loss_list)
+            train_average_loss = sum(train_loss_list)/len(train_loss_list)
+
+            if (epoch+1)%10!=0:
                 wandb.log({
-                        'train_loss':train_average_loss,
+                    'train_loss':train_average_loss,
                 })
-            elif (epoch+1) % 10==0:
+            else:
+                self.model.eval()
                 for batch in tqdm(self.val_loader):
                     image = batch['image'].to(self.device)
                     mask = batch['label'].to(self.device)
                     model_kwargs = dict(y=image)
                     pred_mask_list = []
 
-                    # アンサンブル数 4
-                    for _ in range(4):
+                    # validationのロスを計算
+                    with torch.no_grad():
+                        t = torch.randint(0, self.diffusion.num_timesteps, (mask.shape[0],), device=self.device)
+                        model_kwargs = dict(y=image)
+                        loss_dict = self.diffusion.training_losses(self.model, mask, t, model_kwargs)
+                        loss = loss_dict["loss"]
+                        val_loss_list.append(loss.item())
+
+                    # アンサンブル数 5
+                    for _ in range(5):
                         with torch.no_grad():
                             pred_mask = self.diffusion.ddim_sample_loop(
                                 self.model,
@@ -101,43 +117,66 @@ class Trainer:
                                 model_kwargs=model_kwargs,
                                 clip_denoised=True,
                             )
-                        pred_mask = torch.sigmoid(pred_mask)
+                            pred_mask = torch.sigmoid(pred_mask)
                         pred_mask_list.append(pred_mask)
                     mean_pred_mask = torch.mean(torch.stack(pred_mask_list),dim=0)
                     # std_pred_mask  = torch.std(torch.stack(pred_mask_list),dim=0)
-                    threshold = threshold_otsu(pred_mask.cpu().numpy())        
-                    pred_mask_binary = (mean_pred_mask > threshold).float()
-                    pred_mask_binary = pred_mask_binary.cpu().numpy()
-                    mask             = mask.cpu().numpy()
-                    jacard_score = jaccard(pred_mask_binary, mask)
-                    jaccard_list.append(jacard_score*len(mask))
+                    mean_pred_mask_0 = mean_pred_mask[:,0,:,:,:]
+                    mean_pred_mask_1 = mean_pred_mask[:,1,:,:,:]
+                    mean_pred_mask_2 = mean_pred_mask[:,2,:,:,:]
+                    th0 = threshold_otsu(mean_pred_mask_0.cpu().numpy())        
+                    th1 = threshold_otsu(mean_pred_mask_1.cpu().numpy())        
+                    th2 = threshold_otsu(mean_pred_mask_2.cpu().numpy())
+                    pred_mask_0_binary = (mean_pred_mask_0 > th0).float().cpu().numpy()
+                    pred_mask_1_binary = (mean_pred_mask_1 > th1).float().cpu().numpy()
+                    pred_mask_2_binary = (mean_pred_mask_2 > th2).float().cpu().numpy()
+                    
+                    mask_0 = mask[:,0,:,:,:].cpu().numpy()
+                    mask_1 = mask[:,1,:,:,:].cpu().numpy()
+                    mask_2 = mask[:,2,:,:,:].cpu().numpy()
+                    
+                    jacard_0_score = jaccard(pred_mask_0_binary, mask_0)    
+                    jacard_1_score = jaccard(pred_mask_1_binary, mask_1)
+                    jacard_2_score = jaccard(pred_mask_2_binary, mask_2)
+                    
+                    jaccard_0_list.append(jacard_0_score*len(mask))
+                    jaccard_1_list.append(jacard_1_score*len(mask))
+                    jaccard_2_list.append(jacard_2_score*len(mask))
 
-                jaccard_average = sum(jaccard_list)/self.val_size
-                train_average_loss = sum(train_loss_list)/len(train_loss_list)
+                jaccard_0_average = sum(jaccard_0_list)/self.val_size
+                jaccard_1_average = sum(jaccard_1_list)/self.val_size
+                jaccard_2_average = sum(jaccard_2_list)/self.val_size
+                miou             = (jaccard_0_average + jaccard_1_average + jaccard_2_average)/3
+                val_average_loss = sum(val_loss_list)/len(val_loss_list)
 
+                if miou > best_miou:
+                    print(f"mIoU improved {best_miou:.4f} --> {miou:.4f}. Saving model...")
+                    best_miou = miou
+                    save_model(self.model, "best", self.dir_path)        
                 if self.wandb_flag:
-                    pred_mask = pred_mask.cpu().numpy()
+                    mean_pred_mask = mean_pred_mask.cpu().numpy()
                     image = image.cpu().numpy()
-                    wandb_pred_mask0 = [wandb.Image(pred_mask[i,0,:,:,32]) for i in range(len(pred_mask))]
-                    wandb_pred_mask1 = [wandb.Image(pred_mask[i,1,:,:,32]) for i in range(len(pred_mask))]
-                    wandb_pred_mask2 = [wandb.Image(pred_mask[i,2,:,:,32]) for i in range(len(pred_mask))]
-                    wandb_mask0 = [wandb.Image(mask[i,0,:,:,32]) for i in range(len(mask))]
-                    wandb_mask1 = [wandb.Image(mask[i,1,:,:,32]) for i in range(len(mask))]
-                    wandb_mask2 = [wandb.Image(mask[i,2,:,:,32]) for i in range(len(mask))]
+                    
+                    wandb_pred_mask0 = [wandb.Image(mean_pred_mask[i,0,:,:,32]) for i in range(len(pred_mask))]
+                    wandb_pred_mask1 = [wandb.Image(mean_pred_mask[i,1,:,:,32]) for i in range(len(pred_mask))]
+                    wandb_pred_mask2 = [wandb.Image(mean_pred_mask[i,2,:,:,32]) for i in range(len(pred_mask))]
+                    
+                    wandb_pred_mask_binary0 = [wandb.Image(pred_mask_0_binary[i,:,:,32]) for i in range(len(pred_mask))]
+                    wandb_pred_mask_binary1 = [wandb.Image(pred_mask_1_binary[i,:,:,32]) for i in range(len(pred_mask))]
+                    wandb_pred_mask_binary2 = [wandb.Image(pred_mask_2_binary[i,:,:,32]) for i in range(len(pred_mask))]
+                    
+                    wandb_mask0  = [wandb.Image(mask_0[i,:,:,32]) for i in range(len(mask))]
+                    wandb_mask1  = [wandb.Image(mask_1[i,:,:,32]) for i in range(len(mask))]
+                    wandb_mask2  = [wandb.Image(mask_2[i,:,:,32]) for i in range(len(mask))]
+
                     wandb_image0 = [wandb.Image(image[i,0,:,:,32]) for i in range(len(image))]
                     wandb_image1 = [wandb.Image(image[i,1,:,:,32]) for i in range(len(image))]
                     wandb_image2 = [wandb.Image(image[i,2,:,:,32]) for i in range(len(image))]
                     wandb_image3 = [wandb.Image(image[i,3,:,:,32]) for i in range(len(image))]
-                    wandb_image0 = [wandb.Image(image[i,0,:,:,32]) for i in range(len(image))]
-                    wandb_image1 = [wandb.Image(image[i,1,:,:,32]) for i in range(len(image))]
-                    wandb_image2 = [wandb.Image(image[i,2,:,:,32]) for i in range(len(image))]
-                    wandb_image3 = [wandb.Image(image[i,3,:,:,32]) for i in range(len(image))]
-                    wandb_pred_mask_binary0 = [wandb.Image(pred_mask_binary[i,0,:,:,32]) for i in range(len(pred_mask_binary))]
-                    wandb_pred_mask_binary1 = [wandb.Image(pred_mask_binary[i,1,:,:,32]) for i in range(len(pred_mask_binary))]
-                    wandb_pred_mask_binary2 = [wandb.Image(pred_mask_binary[i,2,:,:,32]) for i in range(len(pred_mask_binary))]
 
                     wandb.log({
                         'train_loss':train_average_loss,
+                        'val_loss':val_average_loss,
                         'pred_mask0':wandb_pred_mask0,
                         'pred_mask1':wandb_pred_mask1,
                         'pred_mask2':wandb_pred_mask2,
@@ -147,12 +186,23 @@ class Trainer:
                         'mask0':wandb_mask0,
                         'mask1':wandb_mask1,
                         'mask2':wandb_mask2,
-                        'IoU' :jaccard_average,
+                        'IoU_ch0' :jaccard_0_average,
+                        'IoU_ch1' :jaccard_1_average,
+                        'IoU_ch2' :jaccard_2_average,
+                        'mIoU'    :miou,
                         'image0':wandb_image0,
                         'image1':wandb_image1,
                         'image2':wandb_image2,
                         'image3':wandb_image3,
                     })
+
+        save_model(self.model, "last", self.dir_path)
+        self.model = load_model(self.model, os.path.join(self.dir_path,"weights","weight_epoch_best.pth"))
+        
+        self.model.eval()
+        jaccard_0_list = []
+        jaccard_1_list = []
+        jaccard_2_list = []
         
         
         self.model.eval()
@@ -164,7 +214,7 @@ class Trainer:
             pred_mask_list = []
 
             # アンサンブル数 4
-            for _ in range(4):
+            for _ in range(5):
                 with torch.no_grad():
                     pred_mask = self.diffusion.ddim_sample_loop(
                         self.model,
@@ -172,36 +222,51 @@ class Trainer:
                         model_kwargs=model_kwargs,
                         clip_denoised=True,
                     )
-                pred_mask = torch.sigmoid(pred_mask)
+                    pred_mask = torch.sigmoid(pred_mask)
                 pred_mask_list.append(pred_mask)
             mean_pred_mask = torch.mean(torch.stack(pred_mask_list),dim=0)
             # std_pred_mask  = torch.std(torch.stack(pred_mask_list),dim=0)
-            threshold = threshold_otsu(pred_mask.cpu().numpy())        
-            pred_mask_binary = (mean_pred_mask > threshold).float()
-            pred_mask_binary = pred_mask_binary.cpu().numpy()
-            mask             = mask.cpu().numpy()
-            jacard_score = jaccard(pred_mask_binary, mask)
-            jaccard_list.append(jacard_score*len(mask))
+            mean_pred_mask_0 = mean_pred_mask[:,0,:,:,:]
+            mean_pred_mask_1 = mean_pred_mask[:,1,:,:,:]
+            mean_pred_mask_2 = mean_pred_mask[:,2,:,:,:]
+            th0 = threshold_otsu(mean_pred_mask_0.cpu().numpy())        
+            th1 = threshold_otsu(mean_pred_mask_1.cpu().numpy())        
+            th2 = threshold_otsu(mean_pred_mask_2.cpu().numpy())
+            pred_mask_0_binary = (mean_pred_mask_0 > th0).float().cpu().numpy()
+            pred_mask_1_binary = (mean_pred_mask_1 > th1).float().cpu().numpy()
+            pred_mask_2_binary = (mean_pred_mask_2 > th2).float().cpu().numpy()
 
-            jaccard_average = sum(jaccard_list)/self.val_size
+            mask_0 = mask[:,0,:,:,:].cpu().numpy()
+            mask_1 = mask[:,1,:,:,:].cpu().numpy()
+            mask_2 = mask[:,2,:,:,:].cpu().numpy()
+            jaccard_0_score = jaccard(pred_mask_0_binary, mask_0)
+            jaccard_1_score = jaccard(pred_mask_1_binary, mask_1)
+            jaccard_2_score = jaccard(pred_mask_2_binary, mask_2)
+            jaccard_0_list.append(jaccard_0_score*len(mask))
+            jaccard_1_list.append(jaccard_1_score*len(mask))
+            jaccard_2_list.append(jaccard_2_score*len(mask))
+        jaccard_0_average = sum(jaccard_0_list)/self.test_size
+        jaccard_1_average = sum(jaccard_1_list)/self.test_size
+        jaccard_2_average = sum(jaccard_2_list)/self.test_size
+        miou              = (jaccard_0_average + jaccard_1_average + jaccard_2_average)/3
         
         if self.wandb_flag:
-            pred_mask = pred_mask.cpu().numpy()
+            mean_pred_mask = mean_pred_mask.cpu().numpy()
             image = image.cpu().numpy()
-            wandb_pred_mask0 = [wandb.Image(pred_mask[i,0,:,:,32]) for i in range(len(pred_mask))]
-            wandb_pred_mask1 = [wandb.Image(pred_mask[i,1,:,:,32]) for i in range(len(pred_mask))]
-            wandb_pred_mask2 = [wandb.Image(pred_mask[i,2,:,:,32]) for i in range(len(pred_mask))]
+            wandb_pred_mask0 = [wandb.Image(mean_pred_mask[i,0,:,:,32]) for i in range(len(pred_mask))]
+            wandb_pred_mask1 = [wandb.Image(mean_pred_mask[i,1,:,:,32]) for i in range(len(pred_mask))]
+            wandb_pred_mask2 = [wandb.Image(mean_pred_mask[i,2,:,:,32]) for i in range(len(pred_mask))]
 
-            wandb_mask0 = [wandb.Image(mask[i,0,:,:,32]) for i in range(len(mask))]
-            wandb_mask1 = [wandb.Image(mask[i,1,:,:,32]) for i in range(len(mask))]
-            wandb_mask2 = [wandb.Image(mask[i,2,:,:,32]) for i in range(len(mask))]
+            wandb_mask0 = [wandb.Image(mask_0[i,:,:,32]) for i in range(len(mask))]
+            wandb_mask1 = [wandb.Image(mask_1[i,:,:,32]) for i in range(len(mask))]
+            wandb_mask2 = [wandb.Image(mask_2[i,:,:,32]) for i in range(len(mask))]
             wandb_image0 = [wandb.Image(image[i,0,:,:,32]) for i in range(len(image))]
             wandb_image1 = [wandb.Image(image[i,1,:,:,32]) for i in range(len(image))]
             wandb_image2 = [wandb.Image(image[i,2,:,:,32]) for i in range(len(image))]
             wandb_image3 = [wandb.Image(image[i,3,:,:,32]) for i in range(len(image))]
-            wandb_pred_mask_binary0 = [wandb.Image(pred_mask_binary[i,0,:,:,32]) for i in range(len(pred_mask_binary))]
-            wandb_pred_mask_binary1 = [wandb.Image(pred_mask_binary[i,1,:,:,32]) for i in range(len(pred_mask_binary))]
-            wandb_pred_mask_binary2 = [wandb.Image(pred_mask_binary[i,2,:,:,32]) for i in range(len(pred_mask_binary))]
+            wandb_pred_mask_binary0 = [wandb.Image(pred_mask_0_binary[i,:,:,32]) for i in range(len(pred_mask_0_binary))]
+            wandb_pred_mask_binary1 = [wandb.Image(pred_mask_1_binary[i,:,:,32]) for i in range(len(pred_mask_1_binary))]
+            wandb_pred_mask_binary2 = [wandb.Image(pred_mask_2_binary[i,:,:,32]) for i in range(len(pred_mask_2_binary))]
             wandb.log({
                     'pred_mask0':wandb_pred_mask0,
                     'pred_mask1':wandb_pred_mask1,
@@ -212,7 +277,10 @@ class Trainer:
                     'mask0':wandb_mask0,
                     'mask1':wandb_mask1,
                     'mask2':wandb_mask2,
-                    'test_IoU' :jaccard_average,
+                    'IoU_ch0' :jaccard_0_average,
+                    'IoU_ch1' :jaccard_1_average,
+                    'IoU_ch2' :jaccard_2_average,
+                    'mIoU'    :miou,
                     'image0':wandb_image0,
                     'image1':wandb_image1,
                     'image2':wandb_image2,
