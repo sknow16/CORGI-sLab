@@ -1,0 +1,119 @@
+from Brats2021 import preDataset
+from ukan_3d import UKAN
+import torch
+import pandas as pd
+import matplotlib.pyplot as plt
+from torch.utils.data import DataLoader
+from monai.transforms import (
+    Compose,
+    Resized,
+    ToTensord,
+    MapTransform,
+    ConvertToMultiChannelBasedOnBratsClassesD,
+    Spacingd,
+)
+from tqdm.auto import tqdm
+import argparse
+from sklearn.model_selection import train_test_split
+from train_util import Trainer
+from torch.optim import Adam
+import logging
+from metric.metric import dice
+from save_log import load_model, create_folder
+import os
+from datetime import date
+import numpy as np
+import random
+
+def set_seed(seed):
+    torch.manual_seed(seed)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    # GPUの乱数も固定（必要なら）
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # マルチGPU用
+        torch.backends.cudnn.deterministic = True  # CuDNNの動作を固定
+        torch.backends.cudnn.benchmark = False  
+    
+def main(args):
+    date_str = date.today().strftime("%Y%m%d")
+    dir_path = os.path.join(args.path,"log",date_str+":"+args.model_name+"_epochs_"+str(args.epochs)+":"+args.dataset)
+    create_folder(dir_path)
+    set_seed(args.seed)
+    
+    # 画像の前処理 (今は、ラベルの情報が0,1,2,3になっていたのがResizeでおかしくなってることに注意)
+    transform = Compose([
+        ConvertToMultiChannelBasedOnBratsClassesD(keys="label"),
+        Resized(keys=["image"], spatial_size=(args.image_size, args.image_size, args.volume_size), mode="trilinear"),  # 画像のサイズ変更
+        Resized(keys=["label"], spatial_size=(args.image_size, args.image_size, args.volume_size), mode="nearest"),  # ラベルのサイズ変更
+        ToTensord(keys=["image", "label"]),
+    ])
+
+    data_list = [os.path.join(args.dataset_path, d) for d in os.listdir(args.dataset_path) if os.path.isdir(os.path.join(args.dataset_path, d))]
+    train_list , test_list = train_test_split(data_list, test_size=0.2, random_state=args.seed)
+    test_list , val_list  = train_test_split(test_list,  test_size=0.5, random_state=args.seed)
+
+    args.train_size, args.val_size, args.test_size = len(train_list), len(val_list), len(test_list)
+    train_set = preDataset(train_list, transform=transform)
+    val_set   = preDataset(val_list,   transform=transform)
+    test_set  = preDataset(test_list,  transform=transform)
+    
+    # model     = UNet3D(args.in_channels, args.out_channels)
+    # 修正点 画像サイズを240から256に変更し, depthsを[1,1,1]に変更
+    # model = UKAN(num_classes=args.out_channels, img_size=(64, 240, 240), patch_size=16, input_channels=args.in_channels, embed_dims=[256, 320, 512], depths=[1, 1], no_kan=False)
+    model = UKAN(num_classes=args.out_channels, img_size=(64, 256, 256), patch_size=(3,3,3), input_channels=args.in_channels, embed_dims=[256, 320, 512], depths=[1, 1, 1], no_kan=False)
+
+    optimizer = Adam(model.parameters(),lr=args.lr)
+    criterion = torch.nn.MSELoss()
+
+    trainer = Trainer(
+        model=model,
+        optimizer=optimizer,
+        criterion=criterion,
+        train_set=train_set,
+        val_set=val_set,
+        test_set=test_set,
+        args=args,
+        dir_path=dir_path,
+    )
+    
+    trainer.train()
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--seed', type=int, default=40) # 今まで42
+    parser.add_argument('--path', type=str, default="/root/save")
+    parser.add_argument('--dataset_path', type=str, default="/root/save/dataset/Brats2021/BraTS2021_Training_Data")
+
+    parser.add_argument('--image_size', type=int, default=256) # 修正点 240->256
+    parser.add_argument('--volume_size', type=int, default=64)
+
+    parser.add_argument('--in_channels', type=int, default=4)   # モデルの入力チャネル
+    parser.add_argument('--out_channels', type=int, default=3)  # モデルの出力チャネル
+
+    parser.add_argument('--epochs', type=int, default=500)
+    parser.add_argument('--lr', type=float, default=1e-4)
+
+    parser.add_argument('--batch_size', type=int, default=2)
+    parser.add_argument('--num_workers', type=int, default=4)
+
+    # wandb関連
+    parser.add_argument('--wandb_flag', type=bool, default=True)
+    parser.add_argument('--project_name', type=str, default='Brats2021_24024064')         # プロジェクト名
+    parser.add_argument('--model_name', type=str, default='3DUKAN_revised')  # モデル名
+    parser.add_argument('--dataset', type=str, default='Brats2021')
+    parser.add_argument('--model_detail', type=str, default='論文まねした。')   # ちょっとした詳細
+
+    parser.add_argument('--train_size', type=int, default=0)  # 訓練
+    parser.add_argument('--val_size', type=int, default=0)    # 検証
+    parser.add_argument('--test_size', type=int, default=0)   # テスト
+
+    parser.add_argument('--img_size', type=str, default='256×256×64')       # 画像サイズ (wandbに送るよう)
+    parser.add_argument('--optimizer', type=str, default='Adam')         # 最適化関数 (wandbに送るよう)
+    parser.add_argument('--loss_function', type=str, default='MSELoss')  # 損失関数 (wandbに送るよう)
+
+    parser.add_argument('--dim_size', type=str, default='3D')       # 2D or 3D (wandbに送るよう)
+    args = parser.parse_args()
+    main(args)
