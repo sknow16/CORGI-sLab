@@ -1,7 +1,6 @@
 from datetime import date
 import os
 from Brats2021 import preDataset
-from model import DiffUNet
 import torch
 import pandas as pd
 
@@ -18,6 +17,9 @@ from train_util import Trainer
 from torch.optim import Adam
 from save_log import load_model, create_folder
 from guided_diffusion.script_util import create_gaussian_diffusion
+
+# from diff_hybrid_ukan_3d import UKan_Hybrid3d
+from model import DiffUKAN
 
 import torch
 
@@ -61,13 +63,16 @@ def estimate_memory_usage(model, diffusion, dataset, device="cuda"):
     del batch, image, mask, t, model_kwargs, loss_dict, loss, dataloader
     torch.cuda.empty_cache()
 
-
-
 def main(args):
     date_str = date.today().strftime("%Y%m%d")
     dir_path = os.path.join(args.path,"log",date_str+":"+args.model_name+"_epochs_"+str(args.epochs)+":"+args.dataset)
     create_folder(dir_path)
-    model     = DiffUNet()
+    model     = DiffUKAN(img_size=(args.volume_size,args.image_size,args.image_size))
+    # model = UKan_Hybrid3d(
+    #      T=1000, ch=32, ch_mult=[1, 2, 2, 2], attn=[], img_size=(64,256,256),
+    #      num_res_blocks=1, dropout=0.0, in_ch=3, cond_ch=4
+    # )
+    
     diffusion = create_gaussian_diffusion(
         # 拡散処理の設定
         steps=1000,         # 時間ステップ:T
@@ -110,9 +115,17 @@ def main(args):
     num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"学習可能なパラメータ数: {num_trainable_params}")
     print(f"学習可能なパラメータ数: {num_trainable_params/1e6:.2f} Million")
-    
+
     # 学習で必要な最大メモリを計測
     estimate_memory_usage(model, diffusion, train_set, device="cuda")
+    # GPUを空にする
+    torch.cuda.empty_cache()
+    # GPUメモリ使用量を確認
+    print("\n[ GPU MEMORY USAGE AFTER ESTIMATION ]")
+    allocated = torch.cuda.memory_allocated() / 1024**2
+    reserved  = torch.cuda.memory_reserved() / 1024**2
+    print(f"GPU Memory Allocated: {allocated:.2f} MB")
+    print(f"GPU Memory Reserved : {reserved:.2f} MB")
     
     trainer = Trainer(
         model=model,
@@ -152,15 +165,15 @@ if __name__ == '__main__':
     # wandb関連
     parser.add_argument('--wandb_flag', type=bool, default=True)
     parser.add_argument('--project_name', type=str, default='Brats2021_24024064')         # プロジェクト名
-    parser.add_argument('--model_name', type=str, default='Diff-UNet.ref')
+    parser.add_argument('--model_name', type=str, default='Diff-UKAN')
     parser.add_argument('--dataset', type=str, default='Brats2021')
-    parser.add_argument('--model_detail', type=str, default='Diff-UNetをまねした')   # ちょっとした詳細
+    parser.add_argument('--model_detail', type=str, default='Diff-UKAN3dを新たに実装')   # ちょっとした詳細
 
     parser.add_argument('--train_size', type=int, default=0)  # 訓練
     parser.add_argument('--val_size', type=int, default=0)    # 検証
     parser.add_argument('--test_size', type=int, default=0)   # テスト
 
-    parser.add_argument('--img_size', type=str, default='240×240×64')       # 画像サイズ (wandbに送るよう)
+    parser.add_argument('--img_size', type=str, default='256×256×64')       # 画像サイズ (wandbに送るよう)
     parser.add_argument('--optimizer', type=str, default='Adam')         # 最適化関数 (wandbに送るよう)
     parser.add_argument('--loss_function', type=str, default='MSELoss')  # 損失関数 (wandbに送るよう)
 

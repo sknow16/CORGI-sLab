@@ -14,12 +14,12 @@ class DiffUNet(nn.Module):
         embeddings = self.embed_model(image)
         return self.model(x, t=t, image=image, embeddings=embeddings)
     
-import torch
-x = torch.randn(1,3,96,96,96)
-image=torch.randn(1,4,96,96,96)
-step = torch.tensor([0])
-model = DiffUNet()
-model_kwargs=dict(image=image)
-y = model(x=x,t=step, **model_kwargs)
+# import torch
+# x = torch.randn(1,3,96,96,96)
+# image=torch.randn(1,4,96,96,96)
+# step = torch.tensor([0])
+# model = DiffUNet()
+# model_kwargs=dict(image=image)
+# y = model(x=x,t=step, **model_kwargs)
 
-print(y.shape)
+# print(y.shape)
