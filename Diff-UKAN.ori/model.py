@@ -3,12 +3,12 @@ from unet.basic_unet_denose import BasicUNetDe
 from unet.basic_unet import BasicUNetEncoder
 
 class DiffUKAN(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, img_size=(64,240,240)) -> None:
         super().__init__()
         self.embed_model = BasicUNetEncoder(3, 4, 2, [64, 64, 128, 256, 512, 64])  # (次元数, 入力のチャネル数, 出力チャネル数(使ってない), [モデルの階層の出力チャネル数(64は使ってない)])
 
         self.model = BasicUNetDe(3, 3+4, 3,  [64, 64, 128, 256, 512, 64], 
-                                act = ("LeakyReLU", {"negative_slope": 0.1, "inplace": False}),img_size=(64,240,240))
+                                act = ("LeakyReLU", {"negative_slope": 0.1, "inplace": False}),img_size=img_size)
 
     def forward(self, x=None, t=None,image=None):
         embeddings = self.embed_model(image)
