@@ -1,0 +1,7 @@
+seg:
+  train_csv_path : '/root/save/dataset/WDDD2_csv/Segtrain.csv'
+  val_csv_path : '/root/save/dataset/WDDD2_csv/Segval.csv'
+  test_csv_path : '/root/save/dataset/WDDD2_csv/Segtest.csv'
+pos:
+  train_csv_path: '/root/save/dataset/WDDD2_csv/Ftrain.csv'
+  test_csv_path: '/root/save/dataset/WDDD2_csv/Ftest.csv'

@@ -1,0 +1,90 @@
+# ── 基本設定 ──────────────────────────────────────
+run_name: lsegdiff_original       # nullにするとW&Bがランダム名をつける
+model:
+  model_name: "LSegDiff"  # UNet or LSegDiff
+
+diffuser_type: diffusion   # null/ diffusion / rectified_flow / flow_matching
+dataset: "WDDD2"
+
+space: "latent" # latent or pixel
+crop_size: null # 64 or 128 or null
+task: seg       # pos or seg or null(使用しない)
+
+wandb:
+  project: WDDD2_Segmentation_2026
+  notes: ""              # 実験の詳細
+  send_images: 4
+  save_code: true
+
+# ── パス ──────────────────────────────────────────
+path: "/root/save/log2026"
+seed: 42
+
+# ── 学習パラメータ ────────────────────────────────
+train:
+  epochs: 1000
+  lr: 1.0e-4
+  batch_size(global): 16
+  batch_size(micro): 16
+  clip_grad: false
+  multi_gpu: false
+  num_workers: 4
+  optimizer: "AdamW"
+  loss_function: "MSELoss"
+
+  use_ema: true
+  save_n_model: 10           # 何回に1回モデルを保存するか (保存時は2個前の保存を削除)
+  val_step_num: 50          # 何epochごとにvalidationを行うか
+
+# ── データセット ──────────────────────────────────
+data:
+  img_size: 256
+  img_channels: 1
+  mask_channels: 3
+
+  train_size: 0
+  val_size: 0
+  test_size: 0
+
+# ── 拡散モデル共通の設定 ────────────────────────────────
+diffusion:
+  val_ensemble: 5
+  test_ensemble: 15
+
+  # ── 拡散モデル設定（DDPM系） ──────────────────────
+  ddpm:
+    ddim: "ddim50"            # ddim100 or ddim50
+    predict_xstart: true
+    noise_schedule: "linear"  # linear or cosine
+    learn_sigma: false
+    z_sampling: false         # zigzag samplingを行うかどうか
+    lambda_step: 0
+
+  # ── Rectified Flow設定 ────────────────────────────
+  rectified_flow:
+    euler_step: 3
+    time_sampler: "uniform"   # uniform / logit_norm / exponential
+    euler_ensemble: 0
+    sampler_type: "euler"     # euler or ensemble_euler
+
+# ── VAE設定 ───────────────────────────────────────
+vae:
+  in_out_ch: 3
+  mode: null  # adapter or in_out_layer
+  checkpoint: false
+  path: null
+  use_stability_vae: true
+  use_tanh: false
+  scaling_factor: 0.18215
+  # ── 潜在空間 ──────────────────────────────────────
+  latent:
+    latent_size: 32
+    latent_dim: 4
+    latent_sample: "sample"   # mean or sample
+
+# ── チェックポイント ──────────────────────────────
+checkpoint:
+  use_best_model: true
+  use_checkpoint: false
+  checkpoint_epoch: 0
+  path: null
