@@ -177,8 +177,9 @@ class Trainer:
         )
         if cfg["train"]["use_ema"]:
             if cfg["checkpoint"]["use_checkpoint"]:
-                # 未実装のためエラー
-                assert False, "EMAのチェックポイントからの学習は未実装です"
+                print("Reading the EMA checkpoint...")
+                self.ema = load_model(self.ema, cfg["checkpoint"]["ema_path"]).to(self.device)
+                requires_grad(self.ema, False)
             else:
                 update_ema(self.ema, self.model, decay=0)  # EMAモデルの初期化
         
@@ -259,6 +260,8 @@ class Trainer:
                     all_metrics[f"{ch}_{key}"].append(value)
         # ループ後の平均
         avg_metrics = {k: sum(v) / self.val_size for k, v in all_metrics.items()}
+        #avg_metricsにmiouも追加
+        avg_metrics["miou"] = (avg_metrics["ch1_iou"] + avg_metrics["ch2_iou"]) / 2
         # print(f"Validation Metrics: {avg_metrics}")
         # 最後のバッチだけwandbへ送る
         # mask = fundus_inv_map_mask(mask.cpu().numpy())
