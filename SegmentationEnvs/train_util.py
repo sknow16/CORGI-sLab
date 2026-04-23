@@ -136,7 +136,7 @@ class Trainer:
 
         self.train_loader = DataLoader(train_set, batch_size=cfg["train"]["batch_size(global)"], shuffle=True, num_workers=cfg["train"]["num_workers"], pin_memory=True, drop_last=True)
         self.val_loader   = DataLoader(val_set, batch_size=cfg["train"]["batch_size(global)"], shuffle=False, num_workers=cfg["train"]["num_workers"], pin_memory=True, drop_last=False)
-        self.test_loader  = DataLoader(test_set, batch_size=cfg["train"]["batch_size(global)"], shuffle=False, num_workers=cfg["train"]["num_workers"], pin_memory=True, drop_last=False)
+        self.test_loader  = DataLoader(test_set, batch_size=1, shuffle=False, num_workers=cfg["train"]["num_workers"], pin_memory=True, drop_last=False)
 
         self.space       = cfg["space"]
         self.crop_size   = cfg["crop_size"]       # null or 64 or 128
@@ -155,8 +155,8 @@ class Trainer:
         elif self.task_select=="seg":
             self.best_score = 0 # mIoUが高いほど良いので初期値は0
         
-        self.best_path            = os.path.join(dir_path,"weights",f"weight_epoch_best_dice.pth")
-        self.ema_best_path        = os.path.join(dir_path,"weights",f"weight_epoch_best_dice_ema.pth")
+        self.best_path            = os.path.join(dir_path,"weights",f"weight_epoch_best.pth")
+        self.ema_best_path        = os.path.join(dir_path,"weights",f"weight_epoch_best_ema.pth")
         self.last_path            = os.path.join(dir_path,"weights",f"weight_epoch_last.pth")
         self.ema_last_path        = os.path.join(dir_path,"weights",f"weight_epoch_last_ema.pth")
 
@@ -164,7 +164,42 @@ class Trainer:
         self.mask_shape   = (cfg["data"]["mask_channels"], cfg["data"]["img_size"], cfg["data"]["img_size"])
         if self.space == "latent":
             self.latent_shape = (cfg["vae"]["latent"]["latent_dim"], cfg["vae"]["latent"]["latent_size"], cfg["vae"]["latent"]["latent_size"])
+    
+    def vae_check(self,cfg):
+        tags = [cfg["model"]["model_name"], cfg["data"]["dataset"], cfg["diffuser_type"], cfg["space"]]
+        tags = [t for t in tags if t is not None]
+        wandb.init(
+            project=cfg["wandb"]["project"],
+            name=cfg["run_name"],
+            tags=tags,
+            config=cfg,
+            save_code=cfg["wandb"]["save_code"],
+        )
+        for batch in self.train_loader:
+            image, mask = batch
+            x_start = mask.to(self.device)
+            with torch.no_grad():
+                x_start = self.vae.encode(x=x_start).latent_dist
+                if cfg["vae"]["latent"]["latent_sample"] == "mean":
+                    x_start = x_start.mode()
+                elif cfg["vae"]["latent"]["latent_sample"] == "sample":
+                    x_start = x_start.sample()
+                x_start = x_start.mul_(self.scaling_factor)
+                x_start = self.vae.decode(x_start/self.scaling_factor).sample
+            break
+        pred_binary_mask, metrics = self._calc_metric_binary(x_start, mask)
+        x_start = pred_binary_mask.cpu().numpy()
+        mask = mask.cpu().numpy()
         
+        wandb_mask = [wandb.Image(mask[i].transpose(1, 2, 0)) for i in range(mask.shape[0])]
+        wandb_x_start = [wandb.Image(x_start[i].transpose(1, 2, 0)) for i in range(x_start.shape[0])]
+        wandb.log({
+            "mask": wandb_mask,
+            "x_start": wandb_x_start,
+            "metrics": metrics,
+        })
+        wandb.finish()
+
     def train_loop(self,cfg):
         tags = [cfg["model"]["model_name"], cfg["data"]["dataset"], cfg["diffuser_type"], cfg["space"]]
         tags = [t for t in tags if t is not None]
@@ -295,6 +330,76 @@ class Trainer:
                 
         return log_dict
       
+    def test_loop(self, cfg):
+        # test_loopは一枚ずつ画像のスコアを計測
+        # 最後に平均も送信
+        # best modelを読み込む
+        if cfg["test"]["use_best_model"]:
+            self.model = load_model(self.model, self.best_path)
+            if self.use_ema:
+                print("Reading the best EMA Model...")
+                self.ema = load_model(self.ema, self.ema_best_path)
+        else:
+            self.model = load_model(self.model, self.last_path)
+            if self.use_ema:
+                print("Reading the last EMA Model...")
+                print(self.ema_last_path)
+                self.ema = load_model(self.ema, self.ema_last_path)
+        tags = ["test", cfg["model"]["model_name"], cfg["data"]["dataset"], cfg["diffuser_type"], cfg["space"]]
+        tags = [t for t in tags if t is not None]
+        wandb.init(
+            project=cfg["wandb"]["project"],
+            name=cfg["run_name"],
+            tags=tags,
+            config=cfg,
+            save_code=cfg["wandb"]["save_code"],
+        )
+        all_metrics = defaultdict(list)
+        for batch in tqdm(self.test_loader, desc="Testing", disable=self.rank != 0):
+            image, mask = batch
+            x_start = mask.to(self.device)
+            y       = image.to(self.device)
+            pred_x_start_list = []
+            if self.diffuser_type is None:
+                pred_mask = self._forward_inference(x_start, y, cfg)
+                std_mask  = None
+            else:
+                for _ in range(cfg["diffusion"]["test_ensemble"]):
+                    pred_x_start = self._forward_inference(x_start, y, cfg)
+                    pred_x_start_list.append(pred_x_start)
+                # 平均, 標準偏差を計算
+                pred_mask   = torch.mean(torch.stack(pred_x_start_list), dim=0) # emsembleの平均
+                std_mask    = torch.std(torch.stack(pred_x_start_list), dim=0)  # emsembleの標準偏差
+            pred_binary_mask, metrics = self._calc_metric_binary(pred_mask, mask)
+            for ch, metric in metrics.items():
+                for key, value in metric.items():
+                    all_metrics[f"{ch}_{key}"].append(value)
+            # miouも計算
+            metrics["miou"] = (metrics["ch1"]["iou"] + metrics["ch2"]["iou"]) / 2
+            all_metrics["miou"].append(metrics["miou"])
+            # wandbへここで送信 (batchは1で固定されてるから)
+            y = y.cpu().numpy()
+            mask = mask.cpu().numpy()
+            pred_binary_mask = pred_binary_mask.cpu().numpy()
+            wandb_y           = [wandb.Image(y[i].transpose(1, 2, 0)) for i in range(y.shape[0])]
+            wandb_x           = [wandb.Image(mask[i].transpose(1, 2, 0)) for i in range(mask.shape[0])]
+            pred_binary_x     = [wandb.Image(pred_binary_mask[i].transpose(1, 2, 0)) for i in range(pred_binary_mask.shape[0])]
+            log_dict = {
+                "y": wandb_y,
+                "mask": wandb_x,
+                "pred_binary_mask": pred_binary_x,
+            }
+            log_dict.update(metrics)
+            wandb.log(log_dict)
+        avg_metrics = {k: sum(v) / self.test_size for k, v in all_metrics.items()}
+        # test_プレフィックスをつける
+        test_avg_metrics = {f"test_{k}": v for k, v in avg_metrics.items()}
+        wandb.log(
+            test_avg_metrics
+        )
+        wandb.finish()
+
+
     def _build_model_kwargs(self, y, cfg): # モデルへのx以外の入力をどうするか
         model_name = cfg["model"]["model_name"]
         if model_name == "LSegDiff":
@@ -376,354 +481,3 @@ class Trainer:
             metrics[f"ch{ch}"] = calc_metric(pred_binary_mask_ch.cpu().numpy(), mask_np[:,ch])
         pred_binary_mask = torch.stack(pred_binary_list, dim=1)
         return pred_binary_mask, metrics
-        # if self.mask_shape[0] == 3:
-        #     pred_mask_ch0 = pred_mask[:,0]
-        #     pred_mask_ch1 = pred_mask[:,1]
-        #     pred_mask_ch2 = pred_mask[:,2]
-        #     th0 = threshold_otsu(pred_mask_ch0.cpu().numpy())
-        #     th1 = threshold_otsu(pred_mask_ch1.cpu().numpy())
-        #     th2 = threshold_otsu(pred_mask_ch2.cpu().numpy())
-        #     pred_binary_mask_ch0 = (pred_mask_ch0 > th0).float()
-        #     pred_binary_mask_ch1 = (pred_mask_ch1 > th1).float()
-        #     pred_binary_mask_ch2 = (pred_mask_ch2 > th2).float()
-        #     pred_binary_mask     = torch.stack([pred_binary_mask_ch0, pred_binary_mask_ch1, pred_binary_mask_ch2], dim=1)
-        #     pred_binary_mask_ch0 = pred_binary_mask_ch0.cpu().numpy()
-        #     pred_binary_mask_ch1 = pred_binary_mask_ch1.cpu().numpy()
-        #     pred_binary_mask_ch2 = pred_binary_mask_ch2.cpu().numpy()
-        #     mask = mask.cpu().numpy()
-            
-        #     metric_ch0 = calc_metric(pred_binary_mask_ch0, mask[:,0])
-        #     metric_ch1 = calc_metric(pred_binary_mask_ch1, mask[:,1])
-        #     metric_ch2 = calc_metric(pred_binary_mask_ch2, mask[:,2])
-            
-        # elif self.mask_shape[0] == 1:
-        #     # 未実装:eroorで止めるようにする
-        #     assert False, "mask_channels=1の二値セグメンテーションは未実装です"
-
-            
-  
-    def train(self):
-        
-        for epoch in range(self.epochs):
-            train_loss_list  = []
-            test_SSIM_list   = [] # 拡散モデルの時はサンプリング過程がたくさん
-            val_ch0_iou_list = []
-            val_ch1_iou_list = []
-            val_ch2_iou_list = []
-
-            self.model.train()
-
-            for batch in tqdm(self.train_loader): # バーがでてくる
-                if self.task_select=="part1":
-                    image = batch
-                    patch_image, cond = create_crop(image.clone(), crop_size=self.crop_size)
-                    x = patch_image.to(self.device)
-                
-
-                elif self.task_select=="part2":
-                    image, mask = batch
-                    patch_image, cond, patch_mask = create_crop(image.clone(),crop_size=self.crop_size,mask=mask.clone())
-                    x = patch_mask.to(self.device)
-                    patch_image = patch_image.to(self.device)
-
-                cond = cond.to(self.device)
-                t = torch.randint(0, self.diffusion.num_timesteps, (x.shape[0],), device=self.device)
-                
-                if self.task_select=="part1":
-                    model_kwargs = dict(cond=cond) # U-Netへの条件
-
-                elif self.task_select=="part2":
-                    with torch.no_grad():
-                        cond_list = self.pos_encoder(cond)
-                    model_kwargs = dict(cond=cond_list,patch_image=patch_image) # U-Netへの条件
-                
-                loss_dict = self.diffusion.training_losses(self.model, x, t, model_kwargs)
-                loss = loss_dict["loss"]
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
-                train_loss_list.append(loss.item())
-            
-            
-            self.model.eval()
-            
-            train_average_loss = sum(train_loss_list)/len(train_loss_list)
-            # for batch in tqdm(self.val_loader):
-            #     if self.task_select=="part1":
-            #         image = batch
-            #         patch_image, cond = create_crop(image.clone(), crop_size=self.crop_size)
-            #         x = patch_image.to(self.device)
-
-            #     elif self.task_select=="part2":
-            #         image, mask = batch
-            #         patch_image, cond, patch_mask = create_crop(image.clone(),crop_size=self.crop_size,mask=mask.clone())
-            #         x = patch_mask.to(self.device)
-            #         patch_image = patch_image.to(self.device)
-
-            #     cond = cond.to(self.device)                
-            #     if self.task_select=="part1":
-            #         model_kwargs = dict(cond=cond) # U-Netへの条件
-
-            #     elif self.task_select=="part2":
-            #         with torch.no_grad():
-            #             cond_list = self.pos_encoder(cond)
-            #         model_kwargs = dict(cond=cond_list,patch_image=patch_image) # U-Netへの条件
-                    
-            #     pred_x = self.diffusion.ddim_sample_loop(
-            #                     self.model,
-            #                     x.shape,
-            #                     model_kwargs=model_kwargs,
-            #                     clip_denoised=True,
-            #                 )
-            #     break
-            if (epoch+1)%25 == 0 or (epoch==0):
-                with torch.no_grad():
-                    
-                    if self.task_select=="part1":
-                        for image in tqdm(self.test_loader): # バーがでてくる
-                            image = batch
-                            patch_image, cond = create_crop(image.clone(), crop_size=self.crop_size)
-                            x = patch_image.to(self.device)
-                            cond = cond.to(self.device)                
-                            model_kwargs = dict(cond=cond) # U-Netへの条件
-                            pred_x = self.diffusion.ddim_sample_loop(
-                                self.model, 
-                                x.shape, 
-                                model_kwargs = model_kwargs,
-                                clip_denoised = True
-                            )
-                            # SSIMスコアの計算（SSIM損失は1からSSIMインデックスを引いたもの）
-                            ssim = tgm.losses.SSIM(5, reduction='mean')
-                            SSIM_loss = ssim(x, pred_x)               
-                            test_SSIM_list.append(SSIM_loss.item())
-
-                        test_average_SSIM = sum(test_SSIM_list) / len(test_SSIM_list)
-                        if test_average_SSIM < self.best_score:
-                            self.best_score = test_average_SSIM
-                            save_model(self.model, 'best', self.dir_path)
-
-                    elif self.task_select=="part2":
-                        for batch in tqdm(self.val_loader):
-                            image, mask = batch
-                            
-                            pred_ch0_list = []
-                            pred_ch1_list = []
-                            pred_ch2_list = []
-                            # アンサンブル数: 5
-                            for _ in range(5):
-                                pred_x = torch.zeros(mask.shape) # cropを結合するようのマスクを用意
-                                left_points = inference_image_split(mask,crop_size=self.crop_size)
-                                for i in range(len(left_points)):
-                                    patch_image, cond, patch_mask = create_inference_crop(image.clone(),crop_size=self.crop_size,mask=mask.clone(),left_point=left_points[i])
-                                    x = patch_mask.to(self.device)
-                                    patch_image = patch_image.to(self.device)
-                                    cond = cond.to(self.device)                
-                                    with torch.no_grad():
-                                        cond_list = self.pos_encoder(cond)
-                                    model_kwargs = dict(cond=cond_list,patch_image=patch_image) # U-Netへの条件
-                                    pred_mini_x = self.diffusion.ddim_sample_loop(
-                                            self.model, 
-                                            x.shape, 
-                                            model_kwargs = model_kwargs,
-                                            clip_denoised = True
-                                        )
-                                    pred_x[:, :, left_points[i][0]:left_points[i][0]+self.crop_size, left_points[i][1]:left_points[i][1]+self.crop_size] = pred_mini_x
-
-                                pred_mask = torch.sigmoid(pred_x)
-                                pred_ch0_list.append(pred_mask[:,0]) # 背景
-                                pred_ch1_list.append(pred_mask[:,1]) # 核
-                                pred_ch2_list.append(pred_mask[:,2]) # 胚
-
-                            # アンサンブルの平均を計算
-                            mean_pred_ch0 = torch.mean(torch.stack(pred_ch0_list), dim=0) # 背景
-                            mean_pred_ch1 = torch.mean(torch.stack(pred_ch1_list), dim=0) # 核
-                            mean_pred_ch2 = torch.mean(torch.stack(pred_ch2_list), dim=0) # 胚
-
-                            # 二値化の閾値を計算 (例: Otsu)
-                            threshold_ch0 = threshold_otsu(mean_pred_ch0.cpu().numpy())
-                            threshold_ch1 = threshold_otsu(mean_pred_ch1.cpu().numpy())
-                            threshold_ch2 = threshold_otsu(mean_pred_ch2.cpu().numpy())
-
-                            # 各チャネルを二値化
-                            pred_binary_ch0 = (mean_pred_ch0 > threshold_ch0).float()
-                            pred_binary_ch1 = (mean_pred_ch1 > threshold_ch1).float()
-                            pred_binary_ch2 = (mean_pred_ch2 > threshold_ch2).float()
-                            # 3チャネルに結合
-                            pred_binary_mask = torch.stack([pred_binary_ch0, pred_binary_ch1, pred_binary_ch2], dim=1)  # [N, 3, H, W]
-                            mask            = mask.cpu().numpy()
-                                
-                            for i in range(mask.shape[0]):
-                                val_ch0_iou_list.append(jaccard(pred_binary_ch0[i].cpu().numpy(), mask[i][0]))
-                                val_ch1_iou_list.append(jaccard(pred_binary_ch1[i].cpu().numpy(), mask[i][1]))
-                                val_ch2_iou_list.append(jaccard(pred_binary_ch2[i].cpu().numpy(), mask[i][2]))
-
-
-
-                        val_ch0_iou_averege = sum(val_ch0_iou_list)/len(val_ch0_iou_list) # 背景
-                        val_ch1_iou_averege = sum(val_ch1_iou_list)/len(val_ch1_iou_list) # 核
-                        val_ch2_iou_averege = sum(val_ch2_iou_list)/len(val_ch2_iou_list) # 胚
-                        val_all_iou_average = (val_ch1_iou_averege+val_ch2_iou_averege)/2 # 核と胚の平均
-
-
-                        if val_all_iou_average > self.best_score:
-                            self.best_score = val_all_iou_average
-                            save_model(self.model, 'best', self.dir_path)                    
-
-                if self.wandb_flag:
-                    if self.task_select=="part1": 
-                        send_num_image = min(5, image.shape[0]) # 画像を送るときの最大数
-                        wandb_image=[wandb.Image(image[i]) for i in range(send_num_image)]
-                        wandb_x    =[wandb.Image(x[i]) for i in range(send_num_image)]
-                        wandb_pred_x    =[wandb.Image(pred_x[i]) for i in range(send_num_image)]  
-                        wandb_cond=[wandb.Image(cond[i]) for i in range(send_num_image)]
-                        wandb.log({
-                            'train_loss':train_average_loss,
-                            'test_score':test_average_SSIM,
-                            'image':wandb_image,
-                            'x':wandb_x,
-                            'pred_x':wandb_pred_x,
-                            'cond':wandb_cond,
-                        })
-                            
-                    elif self.task_select=="part2":
-                        wandb_image=[wandb.Image(image[i]) for i in range(len(image))]
-                        wandb_mask =[wandb.Image(mask[i].transpose(1, 2, 0)) for i in range(len(mask))]
-                        wandb_x    =[wandb.Image(x[i]) for i in range(len(x))]
-                        wandb_pred_mask    =[wandb.Image(pred_binary_mask[i]) for i in range(len(pred_x))]  
-                        wandb_cond=[wandb.Image(cond[i]) for i in range(len(cond))]
-                        wandb.log({
-                            'train_loss':train_average_loss,
-                            '背景IoU': val_ch0_iou_averege,
-                            '核IoU': val_ch1_iou_averege,
-                            '胚IoU': val_ch2_iou_averege,
-                            '胚と核の平均IoU': val_all_iou_average,
-
-                            'image':wandb_image,
-                            'mask':wandb_mask,
-                            # 'patch_image': wandb_patch_image,
-                            # 'x':wandb_x,
-                            'pred_mask':wandb_pred_mask,
-                            # '背景の予測':pred_binary_ch0,
-                            # '核の予測':pred_binary_ch1,
-                            # '胚の予測':pred_binary_ch2,
-                            # 'cond':wandb_cond,
-                        })
-            else:
-                if self.wandb_flag:
-                    if self.task_select=="part1":
-                        wandb_image=[wandb.Image(image[i]) for i in range(len(image))]
-                        wandb_x    =[wandb.Image(x[i]) for i in range(len(x))]
-                        wandb_pred_x    =[wandb.Image(pred_x[i]) for i in range(len(pred_x))]  
-                        wandb_cond=[wandb.Image(cond[i]) for i in range(len(cond))]
-                        wandb.log({
-                            'train_loss':train_average_loss,
-                            # 'image':wandb_image,
-                            # 'x':wandb_x,
-                            # 'pred_x':wandb_pred_x,
-                            # 'cond':wandb_cond,
-                        })
-                    elif self.task_select=="part2":
-                        # wandb_image=[wandb.Image(image[i]) for i in range(len(image))]
-                        # wandb_mask =[wandb.Image(mask[i]) for i in range(len(mask))]
-                        # wandb_patch_image = [wandb.Image(patch_image[i]) for i in range(len(patch_image))]
-                        # wandb_x    =[wandb.Image(x[i]) for i in range(len(x))]
-                        # wandb_pred_x    =[wandb.Image(pred_x[i]) for i in range(len(pred_x))]  
-                        # wandb_cond=[wandb.Image(cond[i]) for i in range(len(cond))]
-                        wandb.log({
-                            'train_loss':train_average_loss,
-                            # 'image':wandb_image,
-                            # 'mask':wandb_mask,
-                            # 'patch_image': wandb_patch_image,
-                            # 'x':wandb_x,
-                            # 'pred_x':wandb_pred_x,
-                            # 'cond':wandb_cond,
-                        })  
-        save_model(self.model,'last', self.dir_path)
-        
-    def test(self):
-        # Testの開始
-        print("start test")
-        self.model.eval()
-        test_ch0_iou_list = []
-        test_ch1_iou_list = []
-        test_ch2_iou_list = []
-        if self.task_select=="part2":
-            for batch in tqdm(self.test_loader):
-                image, mask = batch
-                            
-                pred_ch0_list = []
-                pred_ch1_list = []
-                pred_ch2_list = []
-                # アンサンブル数: 15
-                for _ in range(5):
-                    pred_x = torch.zeros(mask.shape) # cropを結合するようのマスクを用意
-                    left_points = inference_image_split(mask,crop_size=self.crop_size)
-                    for i in range(len(left_points)):
-                        patch_image, cond, patch_mask = create_inference_crop(image.clone(),crop_size=self.crop_size,mask=mask.clone(),left_point=left_points[i])
-                        x = patch_mask.to(self.device)
-                        patch_image = patch_image.to(self.device)
-                        cond = cond.to(self.device)                
-                        with torch.no_grad():
-                            cond_list = self.pos_encoder(cond)
-                        model_kwargs = dict(cond=cond_list,patch_image=patch_image) # U-Netへの条件
-                        pred_mini_x = self.diffusion.ddim_sample_loop(
-                            self.model, 
-                            x.shape, 
-                            model_kwargs = model_kwargs,
-                            clip_denoised = True
-                        )
-                        pred_x[:, :, left_points[i][0]:left_points[i][0]+self.crop_size, left_points[i][1]:left_points[i][1]+self.crop_size] = pred_mini_x
-
-                    pred_mask = torch.sigmoid(pred_x)
-                    pred_ch0_list.append(pred_mask[:,0]) # 背景
-                    pred_ch1_list.append(pred_mask[:,1]) # 核
-                    pred_ch2_list.append(pred_mask[:,2]) # 胚
-
-                # アンサンブルの平均を計算
-                mean_pred_ch0 = torch.mean(torch.stack(pred_ch0_list), dim=0) # 背景
-                mean_pred_ch1 = torch.mean(torch.stack(pred_ch1_list), dim=0) # 核
-                mean_pred_ch2 = torch.mean(torch.stack(pred_ch2_list), dim=0) # 胚
-
-                # 二値化の閾値を計算 (例: Otsu)
-                threshold_ch0 = threshold_otsu(mean_pred_ch0.cpu().numpy())
-                threshold_ch1 = threshold_otsu(mean_pred_ch1.cpu().numpy())
-                threshold_ch2 = threshold_otsu(mean_pred_ch2.cpu().numpy())
-
-                # 各チャネルを二値化
-                pred_binary_ch0 = (mean_pred_ch0 > threshold_ch0).float()
-                pred_binary_ch1 = (mean_pred_ch1 > threshold_ch1).float()
-                pred_binary_ch2 = (mean_pred_ch2 > threshold_ch2).float()
-                # 3チャネルに結合
-                pred_binary_mask = torch.stack([pred_binary_ch0, pred_binary_ch1, pred_binary_ch2], dim=1)  # [N, 3, H, W]
-                mask    = mask.cpu().numpy()
-                for i in range(mask.shape[0]):
-                    test_ch0_iou_list.append(jaccard(pred_binary_ch0[i].cpu().numpy(), mask[i,0]))
-                    test_ch1_iou_list.append(jaccard(pred_binary_ch1[i].cpu().numpy(), mask[i,1]))
-                    test_ch2_iou_list.append(jaccard(pred_binary_ch2[i].cpu().numpy(), mask[i,2]))
-
-            test_ch0_iou_averege = sum(test_ch0_iou_list)/len(test_ch0_iou_list) # 背景
-            test_ch1_iou_averege = sum(test_ch1_iou_list)/len(test_ch1_iou_list) # 核
-            test_ch2_iou_averege = sum(test_ch2_iou_list)/len(test_ch2_iou_list) # 胚
-            test_all_iou_average = (test_ch1_iou_averege+test_ch2_iou_averege)/2 # 核と胚の平均
-                            
-            if self.task_select=="part2":
-                wandb_image=[wandb.Image(image[i]) for i in range(len(image))]
-                wandb_mask =[wandb.Image(mask[i].transpose(1, 2, 0)) for i in range(len(mask))]
-                wandb_pred_mask    =[wandb.Image(pred_binary_mask[i]) for i in range(len(x))]
-                wandb.log({
-                    'test_背景IoU': test_ch0_iou_averege,
-                    'test_核IoU': test_ch1_iou_averege,
-                    'test_胚IoU': test_ch2_iou_averege,
-                    'test_胚と核の平均IoU': test_all_iou_average,
-
-                    'image':wandb_image,
-                    'mask':wandb_mask,
-                    "pred mask": wandb_pred_mask,
-                })
-
-        print(f"ch0 iou: {test_ch0_iou_averege}")
-        print(f"ch1 iou: {test_ch1_iou_averege}")
-        print(f"ch2 iou: {test_ch2_iou_averege}")
-        print(f"all iou: {test_all_iou_average}")
-
-        wandb.finish()
