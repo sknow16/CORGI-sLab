@@ -1,20 +1,21 @@
 # ── 基本設定 ──────────────────────────────────────
-run_name: lsegdiff_original       # nullにするとW&Bがランダム名をつける
+run_name: unet      # nullにするとW&Bがランダム名をつける
 model:
-  model_name: "LSegDiff"  # UNet or LSegDiff
+  model_name: "UNet"  # UNet or LSegDiff
 
-diffuser_type: diffusion   # null/ diffusion / rectified_flow / flow_matching
+diffuser_type: null   # null/ diffusion / rectified_flow / flow_matching
+space: "pixel" # latent or pixel
+
 dataset: "WDDD2"
-
-space: "latent" # latent or pixel
-crop_size: null # 64 or 128 or null
 task: seg       # pos or seg or null(使用しない)
+crop_size: null # 64 or 128 or null
 
 wandb:
   project: WDDD2_Segmentation_2026
   notes: ""              # 実験の詳細
   send_images: 4
   save_code: true
+  pred_feature: true     # pred_maskのチャンネル1と2を画像として送るかどうか
 
 # ── パス ──────────────────────────────────────────
 path: "/root/save/log2026"
@@ -22,7 +23,7 @@ seed: 42
 
 # ── 学習パラメータ ────────────────────────────────
 train:
-  epochs: 1000
+  epochs: 500 # 拡散モデルは1000程度、それ以外は300程度で十分なことが多い
   lr: 1.0e-4
   batch_size(global): 16
   batch_size(micro): 16
@@ -32,9 +33,12 @@ train:
   optimizer: "AdamW"
   loss_function: "MSELoss"
 
-  use_ema: true
+  use_ema: false
   save_n_model: 10           # 何回に1回モデルを保存するか (保存時は2個前の保存を削除)
-  val_step_num: 50          # 何epochごとにvalidationを行うか
+  val_step_num: 10          # 何epochごとにvalidationを行うか
+
+test:
+  use_best_model: true
 
 # ── データセット ──────────────────────────────────
 data:
@@ -84,7 +88,7 @@ vae:
 
 # ── チェックポイント ──────────────────────────────
 checkpoint:
-  use_best_model: true
   use_checkpoint: false
   checkpoint_epoch: 0
-  path: null
+  path: null #"/root/save/log2026/LSegDiff(seg):WDDD2/lsegdiff_original/weights/weight_epoch_980.pth"
+  ema_path: null #"/root/save/log2026/LSegDiff(seg):WDDD2/lsegdiff_original/weights/weight_epoch_980_ema.pth
