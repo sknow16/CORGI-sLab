@@ -84,6 +84,7 @@ def main(cfg):
     )
     
     trainer.train_loop(cfg)
+    trainer.test_loop(cfg)
     
 
     # if args.task_select == 'part1':        
