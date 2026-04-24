@@ -310,12 +310,21 @@ class Trainer:
         wandb_y           = [wandb.Image(y[i].transpose(1, 2, 0)) for i in range(wandb_num_images)]
         wandb_x           = [wandb.Image(mask[i].transpose(1, 2, 0)) for i in range(wandb_num_images)]
         pred_binary_x     = [wandb.Image(pred_binary_mask[i].transpose(1, 2, 0)) for i in range(wandb_num_images)]
-        
         log_dict = {
             "x": wandb_x,
             "y": wandb_y,
             "pred_binary_x": pred_binary_x,
         }
+        
+        if cfg["wandb"]["pred_feature"]:
+            pred_mask         = pred_mask.cpu().numpy()
+            wandb_pred_ch1_x  = [wandb.Image(pred_mask[i][1]) for i in range(wandb_num_images)]
+            wandb_pred_ch2_x  = [wandb.Image(pred_mask[i][2]) for i in range(wandb_num_images)]
+            log_dict.update({
+                "pred_ch1_x": wandb_pred_ch1_x,
+                "pred_ch2_x": wandb_pred_ch2_x,
+            })
+
         # stdは拡散モデルのときだけ追加
         if std_mask is not None:
             log_dict["std"] = [wandb.Image(std_mask[i].transpose(1, 2, 0)) for i in range(wandb_num_images)]

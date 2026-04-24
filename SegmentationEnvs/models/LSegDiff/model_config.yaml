@@ -1,5 +1,5 @@
 model_config:
   in_channels: 4
   cond_in_channels: 1
-  unet_hidden_size: 128
-  time_embed_dim: 256
+  unet_hidden_size: 32
+  time_embed_dim: 64
