@@ -17,78 +17,7 @@ from utils.utils import load_model, save_model
 import os
 from utils import requires_grad, update_ema, calc_metric
 from dataset.wddd2.wddd2_dataset_Seg import fundus_inv_map_mask
-# x = torch.randn(1,1,32,32)
-# mask = torch.zeros(8,8)
-
-def random_coordinate(mask_point_range, batch):
-    coordinates = [(random.randint(0, mask_point_range), random.randint(0, mask_point_range)) for _ in range(batch)]
-    return coordinates
-
-crop_color = 0.3
-def create_crop(x, crop_size, mask=None):
-    n, c, h, w = x.shape
-    left_points = random_coordinate(w-crop_size, n)
-    mini_x = torch.zeros(n, c, crop_size, crop_size)
-    x_mask_ch = torch.zeros(n, c, h, w)
-    if mask is not None:
-        n, c, h, w = mask.shape
-        mini_mask = torch.zeros(n, c, crop_size, crop_size)
-    for i in range(n):
-        mini_x[i] = x[i, :, left_points[i][0]:left_points[i][0]+crop_size, left_points[i][1]:left_points[i][1]+crop_size]
-        if mask is not None:
-            mini_mask[i] = mask[i, :, left_points[i][0]:left_points[i][0]+crop_size, left_points[i][1]:left_points[i][1]+crop_size]
-        # x[i, :, left_points[i][0]:left_points[i][0]+crop_size, left_points[i][1]:left_points[i][1]+crop_size] = 0
-        x_mask_ch[i, :, left_points[i][0]:left_points[i][0]+crop_size, left_points[i][1]:left_points[i][1]+crop_size] = torch.clamp(x_mask_ch[i, :, left_points[i][0]:left_points[i][0]+crop_size, left_points[i][1]:left_points[i][1]+crop_size]+1, 0, 1)
-    new_x = torch.cat((x, x_mask_ch), dim=1)
-    if mask is not None:
-        return mini_x, new_x, mini_mask
-    else:
-        return mini_x, new_x 
-
-def inference_image_split(image, crop_size):
-    coordinates = []
-    _, _, height, width = image.shape
-    for y in range(height-crop_size, -1, -crop_size):
-        for x in range(width-crop_size, -1, -crop_size):
-            coordinates.append((x, y))
-    return coordinates
-
-# オーバーラップの座標を出す
-def overlap_image_split(image, crop_size):
-    overlap_coordinates = []
-    _, _, height, width = image.shape
-    crop_size_half = crop_size/2
-    crop_size_half = int(crop_size_half)
-    
-    pair0 = 0
-    pair1 = crop_size_half
-    while pair1 < height-crop_size_half:
-        print(f"pair0: {pair0}, pair1: {pair1}")
-        overlap_coordinates.append((pair0, pair1))
-        overlap_coordinates.append((pair1, pair0))
-        pair0 += crop_size_half
-        pair1 += crop_size_half
-    return overlap_coordinates
-
-def create_inference_crop(x, crop_size, mask, left_point):
-    n, c, h, w = x.shape
-    mini_x = torch.zeros(n, c, crop_size, crop_size)
-    x_mask_ch = torch.zeros(n, c, h, w)
-    if mask is not None:
-        n, c, h, w = mask.shape
-        mini_mask = torch.zeros(n, c, crop_size, crop_size)
-    mini_x    = x[:, :, left_point[0]:left_point[0]+crop_size, left_point[1]:left_point[1]+crop_size]
-    mini_mask = mask[:, :, left_point[0]:left_point[0]+crop_size, left_point[1]:left_point[1]+crop_size]
-    # x[:, :, left_point[0]:left_point[0]+crop_size, left_point[1]:left_point[1]+crop_size] = torch.clamp(x[:, :, left_point[0]:left_point[0]+crop_size, left_point[1]:left_point[1]+crop_size]+crop_color, 0, 1)
-    x_mask_ch[:, :, left_point[0]:left_point[0]+crop_size, left_point[1]:left_point[1]+crop_size] = torch.clamp(x_mask_ch[:, :, left_point[0]:left_point[0]+crop_size, left_point[1]:left_point[1]+crop_size]+1, 0, 1)
-    new_x = torch.cat((x, x_mask_ch), dim=1)
-    if mask is not None:
-        return mini_x, new_x, mini_mask
-    else:
-        return mini_x, new_x, 
-
-    
-# mini_x, x = create_crop(x, 4)
+from utils.patch_util import random_coordinate, inference_image_split, overlap_image_split, create_inference_crop, create_crop
 
 class Trainer:
     def __init__(
@@ -120,6 +49,7 @@ class Trainer:
             print("Using EMA Model...")
             self.ema = deepcopy(self.model).to(self.device)  # Create an EMA of the model for use after training
             requires_grad(self.ema, False)
+        self.pos_encoder = None
         if pos_encoder is not None:
             self.pos_encoder = pos_encoder.to(self.device)
             self.pos_encoder.eval()
@@ -201,7 +131,7 @@ class Trainer:
         wandb.finish()
 
     def train_loop(self,cfg):
-        tags = [cfg["model"]["model_name"], cfg["data"]["dataset"], cfg["diffuser_type"], cfg["space"]]
+        tags = [cfg["model"]["model_name"], cfg["data"]["dataset"], cfg["diffuser_type"], cfg["space"], cfg["task"]]
         tags = [t for t in tags if t is not None]
         wandb.init(
             project=cfg["wandb"]["project"],
@@ -224,15 +154,26 @@ class Trainer:
             
             for batch in tqdm(self.train_loader, desc=f"Training epoch {epoch}", disable=self.rank != 0):
                 self.model.train()
-                image, mask = batch
+                if self.task_select == "pos":
+                    image, mask = batch, None
+                    mask        = image
+                elif self.task_select == "seg":
+                    image, mask = batch
+                
+                if self.crop_size is not None:
+                    patch_image, patch_cond, patch_mask = create_crop(image.clone(), crop_size=self.crop_size, mask=mask.clone() if mask is not None else None)
+                    image, mask = patch_image, patch_mask
                 self.optimizer.zero_grad()
-                for i in range(0, mask.shape[0],self.microbatch):
+                for i in range(0, image.shape[0],self.microbatch):
                     micro_mask   = mask[i:i+self.microbatch]
-                    micro_image  = image[i:i+self.microbatch]
-                    micro_mask   = micro_mask.to(self.device)
                     x_start      = micro_mask.to(self.device)  # セグメンテーションマップ
+                    micro_image  = image[i:i+self.microbatch]
                     y            = micro_image.to(self.device) # 条件画像
-                    loss = self._forward(x_start, y, cfg)
+                    if self.crop_size is not None: # crop_sizeが指定されている場合は、画像をクロップして順番にモデルに入力する
+                        micro_patch_cond = patch_cond[i:i+self.microbatch].to(self.device)
+                    else:
+                        micro_patch_cond = None
+                    loss = self._forward(x_start, y, cfg, patch_cond=micro_patch_cond)
                     loss.backward()
                     train_losses.append(loss.item() * len(x_start))
                 if self.clip_grad:
@@ -243,7 +184,10 @@ class Trainer:
             train_avg_loss = sum(train_losses) / self.train_size
             wandb_lr = self.optimizer.param_groups[0]['lr']
             if epoch % cfg["train"]["val_step_num"] == 0:
-                log_config = self.val_loop(cfg)
+                if self.crop_size is not None:
+                    log_config = self.val_loop_pos(cfg)
+                else:
+                    log_config = self.val_loop(cfg)
             else:
                 log_config = {}
             log_config.update({
@@ -268,22 +212,71 @@ class Trainer:
         )
         wandb.finish()
 
+    def val_loop_pos(self, cfg):
+        all_metrics = defaultdict(list)
+        ssim = tgm.losses.SSIM(5, reduction='sum')
+        val_test_ssim_list = []
+        if self.use_ema:
+            self.ema.eval()
+        self.model.eval()
+        for batch in tqdm(self.val_loader, desc="Validation", disable=self.rank != 0):
+            image, mask = batch, None
+            x_start     = None
+            y           = image
+            pred_y, patch_image, patch_cond = self._patch_forward_inference(x_start, y, cfg)
+            # SSIMスコアの計算（SSIM損失は1からSSIMインデックスを引いたもの）
+            SSIM_loss = ssim(patch_image, pred_y)               
+            val_test_ssim_list.append(SSIM_loss.item())
+        val_avg_ssim = sum(val_test_ssim_list) / self.val_size
+        y = y.cpu().numpy()
+        patch_image = patch_image.cpu().numpy()
+        patch_cond  = patch_cond.cpu().numpy()
+        pred_y = pred_y.cpu().numpy()
+        wandb_num_images  = min(cfg["wandb"]["send_images"], y.shape[0])
+        wandb_y           = [wandb.Image(y[i].transpose(1, 2, 0)) for i in range(wandb_num_images)]
+        wandb_pred_y      = [wandb.Image(pred_y[i].transpose(1, 2, 0)) for i in range(wandb_num_images)]
+        wandb_patch_cond  = [wandb.Image(patch_cond[i][1]) for i in range(wandb_num_images)]
+        wandb_patch_image = [wandb.Image(patch_image[i].transpose(1, 2, 0)) for i in range(wandb_num_images)]
+        log_dict = {
+            "y": wandb_y,
+            "pred_y": wandb_pred_y,
+            "patch_cond": wandb_patch_cond,
+            "patch_image": wandb_patch_image,
+        }
+            
+        if val_avg_ssim < self.best_score:
+            print(f"ベストSSIM更新: {self.best_score:.4f} → {val_avg_ssim:.4f}")
+            self.best_score = val_avg_ssim
+            save_model(self.model, 'best', self.dir_path)
+            if self.use_ema:
+                save_model(self.ema, 'best_ema', self.dir_path)
+                
+        return log_dict
+    
     def val_loop(self, cfg):
         all_metrics = defaultdict(list)
         
         if self.use_ema:
             self.ema.eval()
         self.model.eval()
-        for image, mask in tqdm(self.val_loader, desc="Validation", disable=self.rank != 0):
-            x_start = mask.to(self.device)
-            y       = image.to(self.device)
+        for batch in tqdm(self.val_loader, desc="Validation", disable=self.rank != 0):
+            if self.task_select == "pos":
+                image, mask = batch, None
+                x_start     = None
+            elif self.task_select == "seg":
+                image, mask = batch
+                x_start = mask
+            y       = image
             pred_x_start_list = []
             if self.diffuser_type is None:
                 pred_mask = self._forward_inference(x_start, y, cfg)
                 std_mask  = None
             else:
                 for _ in range(cfg["diffusion"]["val_ensemble"]):
-                    pred_x_start = self._forward_inference(x_start, y, cfg)
+                    if self.crop_size is not None:
+                        pred_x_start = self._patch_forward_inference(x_start, y, cfg)
+                    else:
+                        pred_x_start = self._forward_inference(x_start, y, cfg)
                     pred_x_start_list.append(pred_x_start)
                 # 平均, 標準偏差を計算
                 pred_mask   = torch.mean(torch.stack(pred_x_start_list), dim=0) # emsembleの平均
@@ -306,7 +299,7 @@ class Trainer:
         pred_binary_mask = pred_binary_mask.cpu().numpy()
         std_mask = std_mask.cpu().numpy() if std_mask is not None else None
         
-        wandb_num_images  = min(cfg["wandb"]["send_images"], y.shape[0], x_start.shape[0])
+        wandb_num_images  = min(cfg["wandb"]["send_images"], y.shape[0])
         wandb_y           = [wandb.Image(y[i].transpose(1, 2, 0)) for i in range(wandb_num_images)]
         wandb_x           = [wandb.Image(mask[i].transpose(1, 2, 0)) for i in range(wandb_num_images)]
         pred_binary_x     = [wandb.Image(pred_binary_mask[i].transpose(1, 2, 0)) for i in range(wandb_num_images)]
@@ -408,17 +401,26 @@ class Trainer:
         )
         wandb.finish()
 
-
-    def _build_model_kwargs(self, y, cfg): # モデルへのx以外の入力をどうするか
+    def _build_model_kwargs(self, y, cfg, patch_cond=None): # モデルへのx以外の入力をどうするか
         model_name = cfg["model"]["model_name"]
-        if model_name == "LSegDiff":
-            model_kwargs = dict(conditioned_image=y)
-        else:
-            model_kwargs = dict()
+        # Part1の学習用
+        if self.task_select == "pos":
+            model_kwargs = dict(cond=patch_cond)
+        elif self.task_select == "seg":
+            # Part2の学習用
+            if self.pos_encoder is not None:
+                with torch.no_grad():
+                    cond_list = self.pos_encoder(patch_cond)
+                model_kwargs = dict(cond=cond_list,patch_image=y) # U-Netへの条件    
+            # 普通の拡散系のモデル    
+            elif model_name == "LSegDiff":
+                model_kwargs = dict(conditioned_image=y) 
+            else:               
+                model_kwargs = dict()
         return model_kwargs
     
-    def _forward(self, x_start, y, cfg):
-        model_kwargs = self._build_model_kwargs(y, cfg)
+    def _forward(self, x_start, y, cfg, patch_cond=None):
+        model_kwargs = self._build_model_kwargs(y, cfg=cfg, patch_cond=patch_cond)
         if self.space == "latent":
             with torch.no_grad():
                 x_start = self.vae.encode(x=x_start).latent_dist
@@ -428,7 +430,7 @@ class Trainer:
                     x_start = x_start.sample()
                 x_start = x_start.mul_(self.scaling_factor)
         if self.diffuser_type == "diffusion":
-            t = torch.randint(0, self.diffuser.num_timesteps, (x_start.shape[0],), device=self.device)
+            t = torch.randint(0, self.diffuser.num_timesteps, (y.shape[0],), device=self.device)
             loss_dict = self.diffuser.training_losses(self.model, x_start, t, model_kwargs)
             loss      = loss_dict["loss"]
         elif self.diffuser_type == "rectified_flow":
@@ -440,6 +442,8 @@ class Trainer:
         return loss
     
     def _forward_inference(self, x_start, y, cfg):
+        x_start = x_start.to(self.device)
+        y       = y.to(self.device)
         model_kwargs = self._build_model_kwargs(y, cfg) 
         # 非拡散モデルの場合
         if self.diffuser_type is None:
@@ -455,7 +459,7 @@ class Trainer:
         if self.space == "latent":
             x_end = torch.randn(x_start.shape[0], self.latent_shape[0], self.latent_shape[1], self.latent_shape[2]).to(self.device)
         else:
-            x_end = torch.randn(x_start.shape[0],self.image_shape[0], self.image_shape[1], self.image_shape[2]).to(self.device) 
+            x_end = torch.randn(y.shape[0],self.image_shape[0], self.image_shape[1], self.image_shape[2]).to(self.device) 
         if self.diffuser_type == "diffusion":
             pred_x_start = self.diffuser.ddim_sample_loop(
                 self.ema if self.use_ema else self.model, # EMAを使うかどうか
@@ -476,6 +480,37 @@ class Trainer:
                 pred_x_start = self.vae.decode(pred_x_start/self.scaling_factor).sample
         return pred_x_start
     
+    def _patch_forward_inference(self, x_start, y, cfg):
+        if self.task_select == "pos":
+            patch_image, patch_cond, _ = create_crop(y.clone(), crop_size=self.crop_size)
+            x    = patch_image.to(self.device)
+            patch_cond = patch_cond.to(self.device)
+            model_kwargs = self._build_model_kwargs(None, cfg=cfg, patch_cond=patch_cond)
+            pred_x = self.diffuser.ddim_sample_loop(
+                self.model, 
+                x.shape, 
+                model_kwargs = model_kwargs,
+                clip_denoised = True
+            )
+            return pred_x, x, patch_cond
+        elif self.task_select == "seg":
+            pred_x = torch.zeros_like(x_start)
+            left_points = inference_image_split(x_start,  crop_size=self.crop_size)
+            for i in range(len(left_points)):
+                patch_image, patch_cond, patch_mask = create_inference_crop(y.clone(),crop_size=self.crop_size,mask=x_start.clone(),left_point=left_points[i])
+                x = patch_mask.to(self.device)
+                patch_image = patch_image.to(self.device)
+                patch_cond = patch_cond.to(self.device)  
+                model_kwargs = self._build_model_kwargs(patch_image, cfg=cfg, patch_cond=patch_cond)
+                pred_mini_x  = self.diffuser.ddim_sample_loop(
+                    self.model, 
+                    x.shape, 
+                    model_kwargs = model_kwargs,
+                    clip_denoised = True
+                )
+                pred_x[:, :, left_points[i][0]:left_points[i][0]+self.crop_size, left_points[i][1]:left_points[i][1]+self.crop_size] = pred_mini_x
+        return pred_x
+                
     # binaryとmericの計算
     def _calc_metric_binary(self, pred_mask, mask):
         num_channels = self.mask_shape[0]
