@@ -3,7 +3,7 @@ import numpy as np
 import random
 import os
 import shutil
-from utils.config import DATASET_CONFIG_MAP, MODEL_CONFIG_MAP
+from configs.config import DATASET_CONFIG_MAP, MODEL_CONFIG_MAP
 def set_seed(seed):
     torch.manual_seed(seed)
     torch.manual_seed(seed)

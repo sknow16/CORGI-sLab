@@ -1,1 +1,2 @@
 from models.LSegDiff.lsegdiff_original import LSegUNet
+from models.Part1_position_model.PatchPosUnet import PatchPosUnet

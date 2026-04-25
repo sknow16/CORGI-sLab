@@ -19,7 +19,7 @@ import numpy as np
 import os
 
 from utils import set_seed, get_dataset, get_vae, get_model, create_folder, select_type
-from utils.config import DATASET_CONFIG_MAP, MODEL_CONFIG_MAP
+from configs.config import DATASET_CONFIG_MAP, MODEL_CONFIG_MAP
 from train_util import Trainer
 
 def main(cfg):
@@ -84,7 +84,8 @@ def main(cfg):
     )
     
     trainer.train_loop(cfg)
-    trainer.test_loop(cfg)
+    if cfg["task"]=="seg":
+        trainer.test_loop(cfg)
     
 
     # if args.task_select == 'part1':        

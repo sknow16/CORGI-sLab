@@ -3,19 +3,15 @@ import monai
 
 def get_model(cfg):
     
-    if cfg["model"]["model_name"] == "PatchSegUNet":
-        if cfg["task"] == "pos":
-            from models.Part1_position_model import UNet_128_2D, UNet_64_2D
-            if cfg["model"]["crop_size"] == 128:
-                model = UNet_128_2D(in_ch=cfg["data"]["img_channels"], out_ch=cfg["data"]["mask_channels"], cond_in_ch=2, hidden_ch=32, time_embed_dim=100)
-            elif cfg["model"]["crop_size"] == 64:
-                model = UNet_64_2D(in_ch=cfg["data"]["img_channels"], out_ch=cfg["data"]["mask_channels"], cond_in_ch=2, hidden_ch=32, time_embed_dim=100)
-            pos_encoder = None
-
-        elif cfg["task"] == "seg":
-            from models.Part2_segmentation_model import PatchSegUnet
+    if cfg["model"]["model_name"] == "PatchPosUnet" and cfg["task"] == "pos":
+        from models import PatchPosUnet
+        model = PatchPosUnet(cfg["crop_size"],cfg["model"]["model_config"])
     
-    if cfg["model"]["model_name"] == "LSegDiff":
+    elif cfg["model"]["model_name"] == "PatchSegUnet" and cfg["task"] == "seg":
+        #  from models.Part2_segmentation_model import PatchSegUnet
+        pass
+    
+    elif cfg["model"]["model_name"] == "LSegDiff":
         from models import LSegUNet
         model = LSegUNet(**cfg["model"]["model_config"])
         
