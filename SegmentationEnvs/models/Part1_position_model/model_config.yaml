@@ -1,0 +1,6 @@
+model_config:
+  in_ch: 1
+  out_ch: 1
+  cond_in_ch: 2
+  hidden_ch: 32
+  time_embed_dim: 100

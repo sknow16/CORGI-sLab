@@ -1,17 +1,17 @@
 # ── 基本設定 ──────────────────────────────────────
-run_name: unet      # nullにするとW&Bがランダム名をつける
+run_name: patchsize_32_2D      # nullにするとW&Bがランダム名をつける
 model:
-  model_name: "UNet"  # UNet or LSegDiff
+  model_name: "PatchPosUnet"  # UNet or LSegDiff or PatchPosUnet
 
-diffuser_type: null   # null/ diffusion / rectified_flow / flow_matching
+diffuser_type: diffusion   # null/ diffusion / rectified_flow / flow_matching
 space: "pixel" # latent or pixel
 
 dataset: "WDDD2"
-task: seg       # pos or seg or null(使用しない)
-crop_size: null # 64 or 128 or null
+task: pos       # pos or seg or null(使用しない)
+crop_size: 32 # 32 or 64 or 128 or null
 
 wandb:
-  project: WDDD2_Segmentation_2026
+  project: WDDD2_Position_2026
   notes: ""              # 実験の詳細
   send_images: 4
   save_code: true
@@ -23,10 +23,10 @@ seed: 42
 
 # ── 学習パラメータ ────────────────────────────────
 train:
-  epochs: 500 # 拡散モデルは1000程度、それ以外は300程度で十分なことが多い
+  epochs: 1000 # 拡散モデルは1000程度、それ以外は300程度で十分なことが多い
   lr: 1.0e-4
-  batch_size(global): 16
-  batch_size(micro): 16
+  batch_size(global): 128
+  batch_size(micro): 128
   clip_grad: false
   multi_gpu: false
   num_workers: 4
@@ -35,7 +35,7 @@ train:
 
   use_ema: false
   save_n_model: 10           # 何回に1回モデルを保存するか (保存時は2個前の保存を削除)
-  val_step_num: 10          # 何epochごとにvalidationを行うか
+  val_step_num: 25          # 何epochごとにvalidationを行うか
 
 test:
   use_best_model: true
