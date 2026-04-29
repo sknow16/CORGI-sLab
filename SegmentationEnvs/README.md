@@ -206,11 +206,12 @@ elif self.mask_shape[0] == 3:
 ## 4. 実行
 
 ### 学習
-```bash
-bash run.sh
+```
+cd SegmentationEnvs
+python main.py
 ```
 
-`run.sh` の内容：
+<!-- `run.sh` の内容：
 ```bash
 #!/bin/bash
 set -e
@@ -221,7 +222,7 @@ python main.py --config configs/config.yaml
 ### テスト
 ```bash
 # config.yamlのtest設定を確認してから実行
-python main.py --config configs/config.yaml --mode test
+python main.py --config configs/config.yaml --mode test -->
 ```
 
 ### 結果確認
