@@ -2,10 +2,25 @@ import os
 from torch.utils.data import DataLoader
 import torch
 from tqdm.auto import tqdm
-from metric.metric import jaccard
+from metric.metric import jaccard, dice, hausdorff_distance_95
 import wandb
 from skimage.filters import threshold_otsu
 from save_log import save_model, load_model
+
+import numpy as np
+import random
+
+def set_seed(seed):
+    torch.manual_seed(seed)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    # GPUの乱数も固定（必要なら）
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # マルチGPU用
+        torch.backends.cudnn.deterministic = True  # CuDNNの動作を固定
+        torch.backends.cudnn.benchmark = False  # 再現性を優先
 
 class Trainer:
     def __init__(
@@ -23,7 +38,7 @@ class Trainer:
     ):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model  = model.to(self.device)
-        
+        self.seed   = args.seed
         self.optimizer = optimizer
         self.criterion = criterion
         
@@ -37,6 +52,10 @@ class Trainer:
         self.test_size = args.test_size
         self.val_size  = args.val_size
         self.wandb_flag = args.wandb_flag
+        self.dir_path   = dir_path
+    
+    def train(self, args):
+        set_seed(self.seed) 
         if self.wandb_flag:
             wandb.init(
                 project=args.project_name,
@@ -60,11 +79,9 @@ class Trainer:
                 "val_volume": args.val_size,
                 "test_volume": args.test_size,
                 
-                "dir_path": dir_path,
+                "dir_path": self.dir_path,
                 }
             )
-    
-    def train(self):
         best_miou = 0.0
         for epoch in range(self.epochs):
             print(f"===epoch({epoch+1}/{self.epochs})===")
@@ -181,13 +198,52 @@ class Trainer:
                     })
         
         save_model(self.model, "last", self.dir_path)
-        self.model = load_model(self.model, os.path.join(self.dir_path,"weights","weight_epoch_best.pth"))
+        # self.model = load_model(self.model, os.path.join(self.dir_path,"weights","weight_epoch_best.pth"))
+    
+    def test(self, args):
+        set_seed(self.seed)
+        wandb.init(
+                project=args.project_name+"_test",
+                name=args.model_name,
+                tags=[args.dim_size],
+                notes= args.model_detail,
+                config={
+                "model":         args.model_name,
+                "dataset":       args.dataset,
+                "epochs":        args.epochs,
+                "image_size":    args.img_size,
+                "in_channel":    args.in_channels,
+                "out_channel":   args.out_channels,
+
+                "batch_size":    args.batch_size,
+                "learning_rate": args.lr,
+
+                "optimizer": args.optimizer,         # 使用している最適化手法
+                "loss_function": args.loss_function, # 使用している損失関数
+
+                "train_volume": args.train_size,
+                "val_volume": args.val_size,
+                "test_volume": args.test_size
+                })
+        self.model = load_model(self.model, os.path.join("/root/save/log/20251026:3DU-Net_epochs_500:Brats2021/weights/weight_epoch_best.pth"))
+        parameters = sum(p.numel() for p in self.model.parameters())
+        print(f"モデルのパラメータ数: {parameters/1e6:.2f} Million")
+        # 学習可能なパラメータ数を計算
+        num_trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        print(f"学習可能なパラメータ数: {num_trainable_params/1e6:.2f} Million")
         
+        # self.model = load_model(self.model, os.path.join(self.dir_path,"weights","weight_epoch_best.pth"))
         self.model.eval()
         test_loss_list = []
         jaccard_0_list = []
         jaccard_1_list = []
         jaccard_2_list = []
+        dice_0_list = []
+        dice_1_list = []
+        dice_2_list = []
+        hausdorff_distance_95_0_list = []
+        hausdorff_distance_95_1_list = []
+        hausdorff_distance_95_2_list = []
 
         for batch in tqdm(self.test_loader):
             image = batch['image'].to(self.device)
@@ -209,36 +265,28 @@ class Trainer:
                 mask_0 = mask[:,0,:,:,:].cpu().numpy()
                 mask_1 = mask[:,1,:,:,:].cpu().numpy()
                 mask_2 = mask[:,2,:,:,:].cpu().numpy()
-
+                
+                image = image.cpu().numpy()
+                mask  = mask.cpu().numpy()
                 # pred_mask = torch.sigmoid(pred_mask)
                 # threshold = threshold_otsu(pred_mask.cpu().numpy())
                 # pred_mask_binary = (pred_mask > threshold).float()
                 # pred_mask_binary = pred_mask_binary.cpu().numpy()
                 # mask      = mask.cpu().numpy()
-            jacard_0_score = jaccard(pred_mask_0_binary, mask_0)
-            jacard_1_score = jaccard(pred_mask_1_binary, mask_1)
-            jacard_2_score = jaccard(pred_mask_2_binary, mask_2)
+            jaccard_0_score = jaccard(pred_mask_0_binary, mask_0)
+            jaccard_1_score = jaccard(pred_mask_1_binary, mask_1)
+            jaccard_2_score = jaccard(pred_mask_2_binary, mask_2)
+            mIoU = (jaccard_0_score + jaccard_1_score + jaccard_2_score)/3
+            dice_0_score = dice(pred_mask_0_binary, mask_0)
+            dice_1_score = dice(pred_mask_1_binary, mask_1)
+            dice_2_score = dice(pred_mask_2_binary, mask_2)
+            hausdorff_0_score = hausdorff_distance_95(pred_mask_0_binary, mask_0)
+            hausdorff_1_score = hausdorff_distance_95(pred_mask_1_binary, mask_1)
+            hausdorff_2_score = hausdorff_distance_95(pred_mask_2_binary, mask_2)
 
-            jaccard_0_list.append(jacard_0_score*len(mask))
-            jaccard_1_list.append(jacard_1_score*len(mask))
-            jaccard_2_list.append(jacard_2_score*len(mask))
-
-        jaccard_0_average = sum(jaccard_0_list)/self.test_size
-        jaccard_1_average = sum(jaccard_1_list)/self.test_size
-        jaccard_2_average = sum(jaccard_2_list)/self.test_size
-        miou              = (jaccard_0_average+jaccard_1_average+jaccard_2_average)/3
-        test_average_loss   = sum(test_loss_list)/len(test_loss_list)
-
-        if self.wandb_flag:
-            pred_mask = pred_mask.cpu().numpy()
-            image = image.cpu().numpy()
-            wandb_pred_mask0 = [wandb.Image(pred_mask[i,0,:,:,32]) for i in range(len(pred_mask))]
-            wandb_pred_mask1 = [wandb.Image(pred_mask[i,1,:,:,32]) for i in range(len(pred_mask))]
-            wandb_pred_mask2 = [wandb.Image(pred_mask[i,2,:,:,32]) for i in range(len(pred_mask))]
-
-            wandb_mask0 = [wandb.Image(mask_0[i,:,:,32]) for i in range(len(mask))]
-            wandb_mask1 = [wandb.Image(mask_1[i,:,:,32]) for i in range(len(mask))]
-            wandb_mask2 = [wandb.Image(mask_2[i,:,:,32]) for i in range(len(mask))]
+            wandb_mask0 = [wandb.Image(mask[i,0,:,:,32]) for i in range(len(mask))]
+            wandb_mask1 = [wandb.Image(mask[i,1,:,:,32]) for i in range(len(mask))]
+            wandb_mask2 = [wandb.Image(mask[i,2,:,:,32]) for i in range(len(mask))]
             wandb_image0 = [wandb.Image(image[i,0,:,:,32]) for i in range(len(image))]
             wandb_image1 = [wandb.Image(image[i,1,:,:,32]) for i in range(len(image))]
             wandb_image2 = [wandb.Image(image[i,2,:,:,32]) for i in range(len(image))]
@@ -247,23 +295,62 @@ class Trainer:
             wandb_pred_mask_binary1 = [wandb.Image(pred_mask_1_binary[i,:,:,32]) for i in range(len(pred_mask_1_binary))]
             wandb_pred_mask_binary2 = [wandb.Image(pred_mask_2_binary[i,:,:,32]) for i in range(len(pred_mask_2_binary))]
             wandb.log({
-                    'test_loss':test_average_loss,
-                    'pred_mask0':wandb_pred_mask0,
-                    'pred_mask1':wandb_pred_mask1,
-                    'pred_mask2':wandb_pred_mask2,
                     'pred_mask_binary0':wandb_pred_mask_binary0,
                     'pred_mask_binary1':wandb_pred_mask_binary1,
                     'pred_mask_binary2':wandb_pred_mask_binary2,
                     'mask0':wandb_mask0,
                     'mask1':wandb_mask1,
                     'mask2':wandb_mask2,
-                    'IoU_ch0' :jaccard_0_average,
-                    'IoU_ch1' :jaccard_1_average,
-                    'IoU_ch2' :jaccard_2_average,
-                    'mIoU'    :miou,
+                    'mIoU' : mIoU,
+                    'IoU_ch0' :jaccard_0_score,
+                    'IoU_ch1' :jaccard_1_score,
+                    'IoU_ch2' :jaccard_2_score,
+                    "Dice_ch0" : dice_0_score,
+                    "Dice_ch1" : dice_1_score,
+                    "Dice_ch2" : dice_2_score,
+                    "Hausdorff_ch0" : hausdorff_0_score,
+                    "Hausdorff_ch1" : hausdorff_1_score,
+                    "Hausdorff_ch2" : hausdorff_2_score,
                     'image0':wandb_image0,
                     'image1':wandb_image1,
                     'image2':wandb_image2,
                     'image3':wandb_image3,
+                })
+  
+
+            jaccard_0_list.append(jaccard_0_score*len(mask))
+            jaccard_1_list.append(jaccard_1_score*len(mask))
+            jaccard_2_list.append(jaccard_2_score*len(mask))
+            dice_0_list.append(dice_0_score*len(mask))
+            dice_1_list.append(dice_1_score*len(mask))
+            dice_2_list.append(dice_2_score*len(mask))
+            hausdorff_distance_95_0_list.append(hausdorff_0_score*len(mask))
+            hausdorff_distance_95_1_list.append(hausdorff_1_score*len(mask))
+            hausdorff_distance_95_2_list.append(hausdorff_2_score*len(mask))
+            
+        jaccard_0_average = sum(jaccard_0_list)/self.test_size
+        jaccard_1_average = sum(jaccard_1_list)/self.test_size
+        jaccard_2_average = sum(jaccard_2_list)/self.test_size
+        dice_0_average = sum(dice_0_list)/self.test_size
+        dice_1_average = sum(dice_1_list)/self.test_size
+        dice_2_average = sum(dice_2_list)/self.test_size
+        hausdorff_distance_95_0_average = sum(hausdorff_distance_95_0_list)/self.test_size
+        hausdorff_distance_95_1_average = sum(hausdorff_distance_95_1_list)/self.test_size
+        hausdorff_distance_95_2_average = sum(hausdorff_distance_95_2_list)/self.test_size
+        miou              = (jaccard_0_average+jaccard_1_average+jaccard_2_average)/3
+        test_average_loss   = sum(test_loss_list)/len(test_loss_list)
+
+        if self.wandb_flag:
+            wandb.log({
+                    'test_mIoU' :miou,
+                    'test_IoU_ch0' :jaccard_0_average,
+                    'test_IoU_ch1' :jaccard_1_average,
+                    'test_IoU_ch2' :jaccard_2_average,
+                    'test_dice_ch0' :dice_0_average,
+                    'test_dice_ch1' :dice_1_average,
+                    'test_dice_ch2' :dice_2_average,
+                    'test_hausdorff_ch0' :hausdorff_distance_95_0_average,
+                    'test_hausdorff_ch1' :hausdorff_distance_95_1_average,
+                    'test_hausdorff_ch2' :hausdorff_distance_95_2_average,
                 })
         wandb.finish()

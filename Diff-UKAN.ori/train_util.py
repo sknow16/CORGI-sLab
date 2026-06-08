@@ -4,8 +4,22 @@ import torch
 from tqdm.auto import tqdm
 import wandb
 from skimage.filters import threshold_otsu
-from metric.metric import jaccard
+from metric.metric import jaccard, dice, hausdorff_distance_95
 from save_log import save_model, load_model
+
+import numpy as np
+import random
+def set_seed(seed):
+    torch.manual_seed(seed)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    # GPUの乱数も固定（必要なら）
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # マルチGPU用
+        torch.backends.cudnn.deterministic = True  # CuDNNの動作を固定
+        torch.backends.cudnn.benchmark = False  # 再現性を優先
 
 class Trainer:
     def __init__(
@@ -29,7 +43,7 @@ class Trainer:
         self.model  = model.to(self.device)
         self.diffusion = diffusion
         self.dir_path = dir_path
-        
+        self.seed      = args.seed
         self.optimizer = optimizer
         self.criterion = criterion # 今回は使ってない(普通の3DU-Netのときはつかう)
 
@@ -42,35 +56,36 @@ class Trainer:
         self.val_size  = args.val_size
         self.wandb_flag = args.wandb_flag
         self.best_mIoU = 0.0
-        if self.wandb_flag:
-            wandb.init(
-                project=args.project_name,
-                name=args.model_name,
-                tags=[args.dim_size],
-                config={
-                "model":         args.model_name,
-                "dataset":       args.dataset,
-                "epochs":        args.epochs,
-                "image_size":    args.img_size,
-                "in_channel":    args.in_channels,
-                "out_channel":   args.out_channels,
+        # if self.wandb_flag:
+        #     wandb.init(
+        #         project=args.project_name,
+        #         name=args.model_name,
+        #         tags=[args.dim_size],
+        #         notes = args.model_detail,
+        #         config={
+        #         "model":         args.model_name,
+        #         "dataset":       args.dataset,
+        #         "epochs":        args.epochs,
+        #         "image_size":    args.img_size,
+        #         "in_channel":    args.in_channels,
+        #         "out_channel":   args.out_channels,
 
-                "batch_size":    args.batch_size,
-                "learning_rate": args.lr,
+        #         "batch_size":    args.batch_size,
+        #         "learning_rate": args.lr,
 
-                "optimizer": args.optimizer,         # 使用している最適化手法
-                "loss_function": args.loss_function, # 使用している損失関数
+        #         "optimizer": args.optimizer,         # 使用している最適化手法
+        #         "loss_function": args.loss_function, # 使用している損失関数
 
-                "train_volume": args.train_size,
-                "val_volume": args.val_size,
-                "test_volume": args.test_size,
-                "num_params": num_params,
-                "num_trainable_params": num_trainable_params,
-                }
-            )
+        #         "train_volume": args.train_size,
+        #         "val_volume": args.val_size,
+        #         "test_volume": args.test_size,
+        #         "num_params": num_params,
+        #         "num_trainable_params": num_trainable_params,
+        #         }
+        #     )
     
     def train(self):
-        
+        set_seed(self.seed)
         for epoch in range(self.epochs):
             train_loss_list = []
             val_loss_list = [] # 拡散モデルの時はサンプリング過程がたくさん
@@ -105,7 +120,7 @@ class Trainer:
                     pred_mask_list = []
 
                     # アンサンブル数 5
-                    for _ in range(5):
+                    for _ in range(10):
                         with torch.no_grad():
                             pred_mask = self.diffusion.ddim_sample_loop(
                                 self.model,
@@ -190,10 +205,12 @@ class Trainer:
         save_model(self.model, "last", self.dir_path)
         wandb.finish()
     def test(self, args):
+        set_seed(self.seed)
         wandb.init(
                 project=args.project_name+"_test",
                 name=args.model_name,
                 tags=[args.dim_size],
+                notes= args.model_detail,
                 config={
                 "model":         args.model_name,
                 "dataset":       args.dataset,
@@ -212,11 +229,27 @@ class Trainer:
                 "val_volume": args.val_size,
                 "test_volume": args.test_size
                 })
-        self.model = load_model(self.model, os.path.join(self.dir_path,"weights","weight_epoch_best.pth"))
+        parameters = sum(p.numel() for p in self.model.parameters())
+        print(f"モデルのパラメータ数: {parameters/1e6:.2f} Million")
+        # self.model = load_model(self.model, os.path.join(self.dir_path,"weights","weight_epoch_best.pth"))
+        self.model = load_model(self.model, os.path.join("/root/save/log/20251111:Diff-UNet.ref_epochs_500:Brats2021/weights/weight_epoch_best.pth"))
+        # parameters = sum(p.numel() for p in self.model.parameters())
+        parameters = sum(p.numel() for p in self.model.parameters())
+        print(f"モデルのパラメータ数: {parameters/1e6:.2f} Million")
+        # 学習可能なパラメータ数を計算
+        num_trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        print(f"学習可能なパラメータ数: {num_trainable_params/1e6:.2f} Million")
+        
         self.model.eval()
         jaccard_0_list = []
         jaccard_1_list = []
         jaccard_2_list = []
+        dice_0_list = []
+        dice_1_list = []
+        dice_2_list = []
+        hausdorff_0_list = []
+        hausdorff_1_list = []
+        hausdorff_2_list = []
         for batch in tqdm(self.test_loader):
             image = batch['image'].to(self.device)
             mask = batch['label'].to(self.device)
@@ -224,7 +257,7 @@ class Trainer:
             pred_mask_list = []
 
             # アンサンブル数 
-            for _ in range(5):
+            for _ in range(10):
                 with torch.no_grad():
                     pred_mask = self.diffusion.ddim_sample_loop(
                         self.model,
@@ -254,10 +287,24 @@ class Trainer:
             jaccard_1_score = jaccard(pred_mask_1_binary, mask_1)
             jaccard_2_score = jaccard(pred_mask_2_binary, mask_2)
 
+            dice_0_score = dice(pred_mask_0_binary, mask_0)
+            dice_1_score = dice(pred_mask_1_binary, mask_1)
+            dice_2_score = dice(pred_mask_2_binary, mask_2)
+
+            hausdorff_0_score = hausdorff_distance_95(pred_mask_0_binary, mask_0)
+            hausdorff_1_score = hausdorff_distance_95(pred_mask_1_binary, mask_1)
+            hausdorff_2_score = hausdorff_distance_95(pred_mask_2_binary, mask_2)
+
             mIoU = (jaccard_0_score + jaccard_1_score + jaccard_2_score)/3.0
             jaccard_0_list.append(jaccard_0_score*len(mask))
             jaccard_1_list.append(jaccard_1_score*len(mask))
             jaccard_2_list.append(jaccard_2_score*len(mask))
+            dice_0_list.append(dice_0_score*len(mask))
+            dice_1_list.append(dice_1_score*len(mask))
+            dice_2_list.append(dice_2_score*len(mask))
+            hausdorff_0_list.append(hausdorff_0_score*len(mask))
+            hausdorff_1_list.append(hausdorff_1_score*len(mask))
+            hausdorff_2_list.append(hausdorff_2_score*len(mask))
 
             image = image.cpu().numpy()
             mask  = mask.cpu().numpy()
@@ -283,6 +330,12 @@ class Trainer:
                     'IoU_ch0' :jaccard_0_score,
                     'IoU_ch1' :jaccard_1_score,
                     'IoU_ch2' :jaccard_2_score,
+                    "Dice_ch0" : dice_0_score,
+                    "Dice_ch1" : dice_1_score,
+                    "Dice_ch2" : dice_2_score,
+                    "Hausdorff_ch0" : hausdorff_0_score,
+                    "Hausdorff_ch1" : hausdorff_1_score,
+                    "Hausdorff_ch2" : hausdorff_2_score,
                     'image0':wandb_image0,
                     'image1':wandb_image1,
                     'image2':wandb_image2,
@@ -293,11 +346,23 @@ class Trainer:
         jaccard_1_average = sum(jaccard_1_list)/self.test_size
         jaccard_2_average = sum(jaccard_2_list)/self.test_size
         jaccard_average = (jaccard_0_average + jaccard_1_average + jaccard_2_average)/3.0
+        dice_0_average = sum(dice_0_list)/self.test_size
+        dice_1_average = sum(dice_1_list)/self.test_size
+        dice_2_average = sum(dice_2_list)/self.test_size
+        hausdorff_0_average = sum(hausdorff_0_list)/self.test_size
+        hausdorff_1_average = sum(hausdorff_1_list)/self.test_size
+        hausdorff_2_average = sum(hausdorff_2_list)/self.test_size
         if self.wandb_flag:
             wandb.log({
                     'test_mIoU' :jaccard_average,
                     'test_IoU_ch0' :jaccard_0_average,
                     'test_IoU_ch1' :jaccard_1_average,
                     'test_IoU_ch2' :jaccard_2_average,
+                    'test_dice_ch0' :dice_0_average,
+                    'test_dice_ch1' :dice_1_average,
+                    'test_dice_ch2' :dice_2_average,
+                    'test_hausdorff_ch0' :hausdorff_0_average,
+                    'test_hausdorff_ch1' :hausdorff_1_average,
+                    'test_hausdorff_ch2' :hausdorff_2_average,
                 })
         wandb.finish()
